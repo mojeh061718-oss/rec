@@ -11,9 +11,12 @@
   'use strict';
 
   var DB_NAME = 'terminal';
-  var DB_VERSION = 1;
+  var DB_VERSION = 2;
   var CHUNKS = 'chunks';   // keyPath [clip, seq] — one record per timeslice
   var CLIPS = 'clips';     // keyPath id — assembled, ready to hand off
+  var META = 'meta';       // keyPath clip — written before the first chunk, so
+                           // a take interrupted by a crash can be rebuilt with
+                           // the right codec and its real start time
 
   var dbp = null;
 
@@ -28,6 +31,9 @@
         }
         if (!d.objectStoreNames.contains(CLIPS)) {
           d.createObjectStore(CLIPS, { keyPath: 'id' });
+        }
+        if (!d.objectStoreNames.contains(META)) {
+          d.createObjectStore(META, { keyPath: 'clip' });
         }
       };
       req.onsuccess = function () { resolve(req.result); };
@@ -74,10 +80,29 @@
     });
   };
 
+  /* Written before the first chunk lands. If the app dies mid-take this is
+     what lets the leftovers be rebuilt as the right kind of file, stamped
+     with when the recording actually started. */
+  Store.beginClip = function (clip, type, ext, at) {
+    return tx(META, 'readwrite', function (s) {
+      s.put({ clip: clip, type: type, ext: ext, at: at });
+    }).catch(function () {});
+  };
+
+  Store.getMeta = function (clip) {
+    return tx(META, 'readonly', function (s) { return s.get(clip); })
+      .catch(function () { return null; });
+  };
+
+  Store.dropMeta = function (clip) {
+    return tx(META, 'readwrite', function (s) { s.delete(clip); })
+      .catch(function () {});
+  };
+
   /* Stitch a clip's chunks into one file record and drop the chunks. The
      assembled Blob references the parts rather than copying them, so this
      does not pull the whole take into memory. */
-  Store.assemble = function (clip, type, ext) {
+  Store.assemble = function (clip, type, ext, startedAt) {
     return tx(CHUNKS, 'readonly', function (s) {
       return s.getAll(range(clip));
     }).then(function (rows) {
@@ -85,7 +110,7 @@
       rows.sort(function (a, b) { return a.seq - b.seq; });
       var parts = rows.map(function (r) { return r.blob; });
       var blob = new Blob(parts, { type: type });
-      var at = Date.now();
+      var at = startedAt || Date.now();
       var rec = { id: clip, blob: blob, type: type, ext: ext, at: at,
                   size: blob.size, saved: false,
                   name: 'clip-' + Store.stamp(at) + '.' + ext };
@@ -207,8 +232,17 @@
         });
         return clips.reduce(function (chain, clip) {
           return chain.then(function () {
-            return Store.assemble(clip, 'video/mp4', 'mp4').catch(function () {
-              return Store.dropChunks(clip);
+            return Store.getMeta(clip).then(function (m) {
+              return Store.assemble(clip,
+                (m && m.type) || 'video/mp4',
+                (m && m.ext) || 'mp4',
+                m && m.at);
+            }).then(function () {
+              return Store.dropMeta(clip);
+            }, function () {
+              return Store.dropChunks(clip).then(function () {
+                return Store.dropMeta(clip);
+              });
             });
           });
         }, Promise.resolve()).then(function () { return clips.length; });

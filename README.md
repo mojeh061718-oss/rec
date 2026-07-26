@@ -158,9 +158,28 @@ of whoever is in the room. If you'd rather it didn't, don't type `done` yet —
 capture keeps running, and the recording is only ended when you say so. Leave
 the app and the take is finalised and stored, ready for `save` later.
 
-Clips live in IndexedDB, so they survive closing the app, force-quitting it,
-and rebooting the phone. If the app is killed mid-recording, the partial take
-is recovered and assembled on next launch rather than lost.
+## If the app crashes
+
+Recording writes to disk continuously, not just at the end. Every two seconds
+the take so far is flushed to IndexedDB, and a small record of what the take is
+— codec and start time — is written before the first frame lands.
+
+So if the app is killed mid-recording, whether by a crash, a force-quit, or iOS
+reclaiming memory, the footage is still on the phone. The next launch finds the
+leftovers, rebuilds them into a normal clip with the right format and its real
+timestamp, and raises the `main*` marker. `save` hands it over like any other.
+
+**What you lose is up to two seconds** — whatever hadn't been flushed yet.
+Nothing more.
+
+The assembled clip is also written before the raw pieces are cleared, so a
+crash in that gap still leaves a recoverable take rather than half of one.
+
+Verified by killing the app mid-recording and relaunching: the take was
+rebuilt, correctly stamped, and saved.
+
+Clips already finished live in IndexedDB too, so they survive closing the app,
+force-quitting it, and rebooting the phone.
 
 A take is held in memory first and written to disk alongside, rather than
 going to disk only. Storage can refuse a write — a full origin quota is the

@@ -19,7 +19,9 @@
   var MIN_BPS = 4000000;
   var MAX_BPS = 40000000;
   var AUDIO_BPS = 256000;       // headroom for singing, not speech
-  var TIMESLICE_MS = 4000;      // flush cadence — bounds loss on interruption
+  // Flush cadence. This is exactly how much of the tail a crash can cost, so
+  // it is kept short; the cost is one more IndexedDB write every two seconds.
+  var TIMESLICE_MS = 2000;
   var MAX_MS = 25 * 60 * 1000;  // failsafe stop
   var MEM_LIMIT = 400 * 1024 * 1024;  // hand over to disk past this
 
@@ -404,6 +406,12 @@
       self.recorder = self._build(mime, bitrateFor(self.stream.getVideoTracks()[0]));
       self.diag.mime = self.recorder.mimeType || mime || '(default)';
 
+      // Record what this take is before any of it lands, so a crash leaves
+      // enough behind to rebuild it correctly.
+      self.startedAt = Date.now();
+      var liveType = (self.recorder.mimeType || 'video/mp4').split(';')[0];
+      Store.beginClip(self.clipId, liveType, extFor(liveType), self.startedAt);
+
       // Memory is the primary copy — it is the one path that cannot fail
       // underneath us. Disk is written alongside it for persistence and for
       // crash recovery, and a disk failure is recorded rather than swallowed.
@@ -508,7 +516,7 @@
       if (!self.spilled && self.chunks.length) {
         var blob = new Blob(self.chunks, { type: type });
         self.chunks = [];
-        var at = Date.now();
+        var at = self.startedAt || Date.now();
         var rec = { id: clip, blob: blob, type: type, ext: ext, at: at,
                     size: blob.size, saved: false,
                     name: 'clip-' + Store.stamp(at) + '.' + ext };
@@ -521,8 +529,11 @@
         // opened. Assembling the Blob is cheap — it references the chunks
         // rather than copying them — so the caller can share at once while
         // the write lands behind it.
+        // Chunks are only cleared once the assembled clip is safely stored,
+        // so a crash in between leaves the take recoverable either way.
         self.lastWrite = Store.put(rec).then(function () {
           Store.dropChunks(clip);
+          Store.dropMeta(clip);
         }, function (e) {
           self.diag.errors.push('save: ' + (e && e.name ? e.name : 'failed'));
           Recorder.orphans.push(rec);   // a list: a second failure must not
@@ -536,7 +547,10 @@
       // it up if the automatic attempt misses.
       return self.writes.then(function () {
         self.lastWrite = Promise.resolve();
-        return Store.assemble(clip, type, ext);
+        return Store.assemble(clip, type, ext, self.startedAt).then(function (rec) {
+          Store.dropMeta(clip);
+          return rec;
+        });
       });
     });
   };
