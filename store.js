@@ -175,6 +175,19 @@
     });
   };
 
+  /* Housekeeping at boot: clear clips that were handed off and are older than
+     maxAgeMs. Only ever touches clips already marked saved, so a recording
+     you haven't sent anywhere is never at risk from this. */
+  Store.prune = function (maxAgeMs) {
+    var cutoff = Date.now() - maxAgeMs;
+    return Store.list().then(function (rows) {
+      var stale = rows.filter(function (r) { return r.saved && r.at < cutoff; });
+      return stale.reduce(function (chain, r) {
+        return chain.then(function () { return Store.remove(r.id); });
+      }, Promise.resolve()).then(function () { return stale.length; });
+    }).catch(function () { return 0; });
+  };
+
   Store.removeAll = function () {
     return Store.list().then(function (rows) {
       return rows.reduce(function (chain, r) {

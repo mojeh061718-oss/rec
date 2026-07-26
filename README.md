@@ -12,8 +12,8 @@ the transcript gives no hint that any of them is different from the others.
 | ----------- | ------ |
 | `ac1`       | starts capturing on the **0.5× ultra wide** |
 | `ac2`       | starts capturing on the **1× main camera** |
-| `done`      | stops. Stores the clip. Shows nothing. |
-| `save`      | opens the share sheet with the oldest unsaved clip |
+| `done`      | stops, stores the clip, and opens the share sheet |
+| `save`      | retries the sheet for the oldest unsaved clip |
 | `clips`     | lists stored clips, oldest first (`✓` = already handed off) |
 | `drop`      | deletes clips already handed off |
 | `drop all`  | deletes every stored clip, saved or not |
@@ -86,14 +86,24 @@ Run it after `done` if you're unsure a take worked.
 Anything else you type plays a filler turn, so you can keep typing naturally
 for as long as you want.
 
-## Saving is two steps
+## Saving
 
-**`done` does not put anything in your camera roll.** It stops the recording
-and stores the clip. `save` is what hands it to Photos. Forgetting the second
-step is the easiest way to think this is broken — the take is sitting safely in
-storage while the screen says the build is clean.
+`done` does everything: it stops the recording, stores the clip, and opens the
+share sheet with the video already attached. One tap on **Save Video** puts it
+in the camera roll, or **Save to Files** if you'd rather.
 
-The status line tells you when something is waiting:
+That tap is the only part iOS won't let an app do for itself. No web app can
+write to Photos or to Files directly, and the sheet is system UI — it can't be
+replaced by anything drawn in the console. Everything either side of it is
+automatic.
+
+The sheet has to open within a few seconds of the keypress that authorised it,
+so `done` shares before it plays any of its output, and the clip is written to
+storage in the background rather than ahead of the sheet. Measured at about
+15 ms from keypress to sheet.
+
+If the sheet doesn't appear, or you dismiss it, the clip is kept and `save`
+tries again. The status line tells you when something is waiting:
 
 ```
 main* · 64% context left
@@ -121,9 +131,11 @@ resolves a share as soon as the sheet closes — a denied Photos permission or a
 cancelled sub-sheet still comes back as success — so deleting on that word
 throws away the only copy of a clip that never actually arrived.
 
-Once you have *seen* the video in your camera roll, `drop` clears the ones
-marked `✓`. It will not touch an unsaved clip. `drop all` takes everything and
-is the only command here that can destroy a recording you haven't saved.
+Clips marked `✓` are cleared automatically two days after they were saved, so
+storage doesn't need managing by hand. Unsaved clips are never pruned, at any
+age. To free space sooner, `drop` clears the `✓` ones immediately — it will not
+touch an unsaved clip. `drop all` takes everything and is the only command here
+that can destroy a recording you haven't saved.
 
 ## Every clip has its own name
 
@@ -138,16 +150,12 @@ Files silently replaced the first. Saving into Photos was never affected —
 Photos keys on its own asset IDs, not filenames — but anything routed through
 Files was.
 
-## Why `done` doesn't open the sheet itself
+## A note on timing
 
-The iOS share sheet is system UI. Nothing drawn inside the app can replace it,
-and no web app can write to Photos without it. So the only thing worth
-controlling is *when* it appears — and it no longer appears when you stop.
-
-`done` writes the clip to storage and shows nothing at all. Later, once the
-room is empty, `save` pops the sheet for the oldest clip; one tap on "Save
-Video" puts it in the camera roll. `save` again for the next one. `clips` tells
-you how many are waiting.
+The sheet appears the moment you type `done`, which means it appears in front
+of whoever is in the room. If you'd rather it didn't, don't type `done` yet —
+capture keeps running, and the recording is only ended when you say so. Leave
+the app and the take is finalised and stored, ready for `save` later.
 
 Clips live in IndexedDB, so they survive closing the app, force-quitting it,
 and rebooting the phone. If the app is killed mid-recording, the partial take
@@ -160,12 +168,9 @@ through. `diag` reports it as an `orphan`: saveable, but only until the app
 closes. Past 400 MB the memory copy is dropped and disk takes over, since a
 long 4K take would otherwise be large enough to bring the tab down.
 
-Nothing is deleted automatically at all — not on a failed share, and not on a
-successful one. Storage is only ever freed by `drop`, which you run once
-you've confirmed the video is really in your camera roll.
-
-Since clips accumulate until then, keep an eye on `stored:` in `diag` if
-you're taking several 4K takes in a row.
+A clip is never deleted because a share reported success. The only automatic
+deletion is the two-day sweep of clips already handed off; everything else
+needs `drop`.
 
 ## Lenses
 

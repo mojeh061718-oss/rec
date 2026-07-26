@@ -4,7 +4,7 @@
  * Control words (all of them produce ordinary-looking turns):
  *   ac1          begin capture on the 0.5x ultra wide
  *   ac2          begin capture on the 1x main camera
- *   done         end capture — stores the clip, shows nothing
+ *   done         end capture, store the clip, and open the share sheet
  *   save         hand the oldest stored clip to the iOS share sheet
  *   clips        list stored clips, newest last, ✓ = already handed off
  *   drop         delete clips already handed off
@@ -147,27 +147,31 @@
    * already cost one recording. Clips are marked saved and kept; `drop`
    * removes them when you have confirmed they are in the camera roll.
    */
+  /* Offer one specific clip to the share sheet. */
+  function shareRecord(rec) {
+    return Recorder.save(Store.toFile(rec)).then(function (result) {
+      if (result !== 'saved') return 'kept';
+      var i = Recorder.orphans.indexOf(rec);
+      if (i !== -1) Recorder.orphans.splice(i, 1);
+      rec.saved = true;
+      // Wait for the background write before marking, so the flag can't be
+      // overwritten by a put that is still in flight.
+      return (recorder.lastWrite || Promise.resolve())
+        .catch(function () {})
+        .then(function () { return Store.put(rec); })
+        .then(function () { return 'saved'; }, function () { return 'saved'; });
+    }, function () { return 'kept'; });
+  }
+
+  /* Oldest clip still waiting. Orphans finished but could not be stored and
+     only live for this session, so they go first. */
   function handoff() {
-    // Orphans finished but could not be stored, and only live for this
-    // session, so they go first.
     var pick = Recorder.orphans.length
       ? Promise.resolve(Recorder.orphans[0])
       : Store.unsaved().then(function (rows) { return rows[0] || null; });
 
     return pick.then(function (rec) {
-      if (!rec) return 'empty';
-      return Recorder.save(Store.toFile(rec)).then(function (result) {
-        if (result !== 'saved') return 'kept';
-        var i = Recorder.orphans.indexOf(rec);
-        if (i !== -1) {
-          Recorder.orphans.splice(i, 1);
-          rec.saved = true;
-          return Store.put(rec).then(function () { return 'saved'; },
-                                     function () { return 'saved'; });
-        }
-        return Store.markSaved(rec.id).then(function () { return 'saved'; },
-                                            function () { return 'saved'; });
-      }, function () { return 'kept'; });
+      return rec ? shareRecord(rec) : 'empty';
     }, function () { return 'empty'; });
   }
 
@@ -330,12 +334,18 @@
       var stopped = recorder.stop();
       paintStatus();
       return stopped.then(function (rec) {
-        // Repaint before the turn plays, so the asterisk marking a waiting
-        // clip is up by the time the "build" finishes.
-        if (rec) pending++;
+        if (!rec) { paintStatus(); return playTurn(T.failed); }
+        pending++;
         paintStatus();
-        return (rec ? playTurn(T.stop) : playTurn(T.failed))
-          .then(refreshPending);
+        // Share straight away, before any of the turn's animation runs. The
+        // keypress that submitted `done` is what authorises the sheet, and
+        // that authorisation expires in seconds — playing the turn first
+        // would spend it on a spinner.
+        return shareRecord(rec).then(function (result) {
+          return refreshPending().then(function () {
+            return playTurn(result === 'saved' ? T.stop : T.handoff);
+          });
+        });
       }, function () {
         paintStatus();
         return playTurn(T.failed);
@@ -437,9 +447,12 @@
   // Ask iOS not to evict stored clips, and rescue any take that was cut short
   // by the app being killed mid-recording.
   Store.persist();
-  // Recover anything cut short by a kill, then show the waiting count. A clip
-  // left over from an earlier session shows its asterisk at boot.
-  Store.recover().then(refreshPending, refreshPending);
+  // Recover anything cut short by a kill, clear out clips that were saved
+  // more than two days ago, then show the waiting count. A clip left over
+  // from an earlier session shows its asterisk at boot.
+  Store.recover()
+    .then(function () { return Store.prune(48 * 60 * 60 * 1000); })
+    .then(refreshPending, refreshPending);
 
   // Deal with the permission sheet at the first touch, long before it could
   // matter. Silent either way — a refusal here just means `rec` asks later.

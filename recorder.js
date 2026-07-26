@@ -496,19 +496,30 @@
         var rec = { id: clip, blob: blob, type: type, ext: ext, at: at,
                     size: blob.size, saved: false,
                     name: 'clip-' + Store.stamp(at) + '.' + ext };
-        // Park it in storage so it survives a force-quit, but hand it back
-        // regardless — a storage failure must not lose the take.
-        return Store.put(rec).catch(function (e) {
+
+        // Hand the clip back immediately and persist in the background.
+        //
+        // The share sheet has to open inside the few seconds of user
+        // activation that the keypress granted, and writing a gigabyte to
+        // IndexedDB first would spend that budget before the sheet ever
+        // opened. Assembling the Blob is cheap — it references the chunks
+        // rather than copying them — so the caller can share at once while
+        // the write lands behind it.
+        self.lastWrite = Store.put(rec).then(function () {
+          Store.dropChunks(clip);
+        }, function (e) {
           self.diag.errors.push('save: ' + (e && e.name ? e.name : 'failed'));
           Recorder.orphans.push(rec);   // a list: a second failure must not
                                         // displace the first one's only copy
-        }).then(function () {
-          Store.dropChunks(clip);
-          return rec;
         });
+        return rec;
       }
 
+      // Spilled to disk mid-take: the clip has to be read back and stitched,
+      // which is slower and may outlast the activation window. `save` picks
+      // it up if the automatic attempt misses.
       return self.writes.then(function () {
+        self.lastWrite = Promise.resolve();
         return Store.assemble(clip, type, ext);
       });
     });
