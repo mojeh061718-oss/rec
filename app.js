@@ -2,10 +2,12 @@
  * the status line honest for the operator without announcing anything.
  *
  * Control words (all of them produce ordinary-looking turns):
- *   rec    begin capture
- *   done   end capture and hand the file to the iOS share sheet
- *   warm   acquire the camera without recording (clears the permission sheet)
- *   cool   release the camera entirely
+ *   agent call-1   begin capture
+ *   done           end capture, hand the file to the iOS share sheet
+ *   warm           take the camera without recording (clears the prompt)
+ *   cool           release the camera entirely
+ *   lens           report which lens is live
+ *   lens next      move to the next back lens
  *
  * Anything else plays a filler turn.
  */
@@ -131,14 +133,34 @@
 
   /* Commands ----------------------------------------------------------- */
 
+  // Collapses case, spacing and punctuation, so "agent call-1", "Agent Call 1"
+  // and "agentcall1" are all the same word. Typos are not — a filler turn is
+  // the safe failure, and the status bar says whether it took.
   function normalise(text) {
-    return text.trim().toLowerCase().replace(/[^a-z]/g, '');
+    return text.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+  }
+
+  /* Reports the live lens as an ordinary settings read. */
+  function lensTurn(report) {
+    return [
+      ['spin', 'Working', 900],
+      ['tool', '⏺ Read(.claude/settings.json)', 700],
+      ['result', '  ⎿  profile: ' + (report.active || report.wantLabel), 0]
+    ];
   }
 
   function run(raw) {
     var cmd = normalise(raw);
 
-    if (cmd === 'rec') {
+    if (cmd === 'lens' || cmd === 'lensnext') {
+      var got = cmd === 'lensnext'
+        ? recorder.cycleLens()
+        : recorder.warm().then(function () { return recorder.lensReport(); },
+                              function () { return recorder.lensReport(); });
+      return got.then(function (report) { return playTurn(lensTurn(report)); });
+    }
+
+    if (cmd === 'agentcall1') {
       // Kick capture off inside the gesture, then let the turn play out
       // alongside it. The transcript never waits on the camera.
       var started = recorder.start().then(function () {

@@ -8,15 +8,41 @@ preview, a timer, or any recording state on screen.
 Type these at the prompt. Every one of them produces an ordinary-looking turn —
 the transcript gives no hint that any of them is different from the others.
 
-| Word   | Effect |
-| ------ | ------ |
-| `rec`  | starts capturing |
-| `done` | stops, then opens the iOS share sheet with the clip attached |
-| `warm` | takes the camera without recording — clears the permission prompt early |
-| `cool` | releases the camera (green indicator goes out) |
+| Word           | Effect |
+| -------------- | ------ |
+| `agent call-1` | starts capturing |
+| `done`         | stops, then opens the iOS share sheet with the clip attached |
+| `warm`         | takes the camera without recording — clears the permission prompt early |
+| `cool`         | releases the camera (green indicator goes out) |
+| `lens`         | reports which lens is live |
+| `lens next`    | moves to the next back lens |
+
+Case, spacing and punctuation don't matter — `Agent Call 1` and `agentcall1`
+work the same as `agent call-1`. A typo doesn't, though: it just plays a filler
+turn like any other text, and the status line tells you capture didn't start.
 
 Anything else you type plays a filler turn, so you can keep typing naturally
 for as long as you want.
+
+## Lens
+
+It defaults to the **0.5× ultra wide**, which gives the widest field of view —
+the right default when you can't watch a preview to check framing.
+
+iOS only reveals the individual lenses after camera permission is granted, and
+only by name, so the app takes the camera once, reads what's there, and
+re-acquires on the ultra wide. If your iOS build doesn't expose a discrete
+ultra wide device, it falls back to the virtual multi-lens camera pinned to its
+minimum zoom — same lens, same result. If neither is available it stays on the
+standard back camera.
+
+Type `lens` to see which one is actually live. Worth doing once on the phone.
+
+**The trade-off:** the ultra wide has a smaller sensor and a slower aperture,
+so in dim indoor light it will be visibly grainier than the 1× main camera, and
+faces near the edges of frame get stretched. If the room is well lit, or if
+she's centred and close, `lens next` to the 1× will look better. Compare both
+on a real take before deciding.
 
 ## The one visible difference
 
