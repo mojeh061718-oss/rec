@@ -6,7 +6,9 @@
  *   ac2          begin capture on the 1x main camera
  *   done         end capture — stores the clip, shows nothing
  *   save         hand the oldest stored clip to the iOS share sheet
- *   clips        report how many clips are waiting
+ *   clips        list stored clips, newest last, ✓ = already handed off
+ *   drop         delete clips already handed off
+ *   drop all     delete every stored clip, saved or not
  *   diag         real internals — the one output here that isn't theatre
  *   update       drop the cached build and reload (clips are not touched)
  *   warm         take the camera without recording (clears the prompt)
@@ -118,10 +120,12 @@
       : branch + ' · ' + contextLeft + '% context left';
   }
 
-  /* Recount stored clips, then repaint. */
+  /* Recount clips still waiting to be handed off, then repaint. Clips that
+     have been saved stay in storage but no longer raise the asterisk. */
   function refreshPending() {
     return Store.list().then(function (rows) {
-      pending = rows.length;
+      pending = rows.filter(function (r) { return !r.saved; }).length +
+                Recorder.orphans.length;
       paintStatus();
       return rows;
     }, function () { return []; });
@@ -135,23 +139,34 @@
    * is when it shows up.
    */
 
+  /* Hand the oldest unsaved clip to the share sheet.
+   *
+   * Nothing is ever deleted here. iOS resolves a share before Photos has
+   * necessarily written anything — a denied permission or a cancelled
+   * sub-sheet still comes back as success — and deleting on that word has
+   * already cost one recording. Clips are marked saved and kept; `drop`
+   * removes them when you have confirmed they are in the camera roll.
+   */
   function handoff() {
-    // Recorder.orphan is a clip that finished but could not be stored. It
-    // only lives for this session, so it goes first.
-    var pick = Recorder.orphan
-      ? Promise.resolve(Recorder.orphan)
-      : Store.oldest();
+    // Orphans finished but could not be stored, and only live for this
+    // session, so they go first.
+    var pick = Recorder.orphans.length
+      ? Promise.resolve(Recorder.orphans[0])
+      : Store.unsaved().then(function (rows) { return rows[0] || null; });
 
     return pick.then(function (rec) {
       if (!rec) return 'empty';
       return Recorder.save(Store.toFile(rec)).then(function (result) {
-        // Only a genuine share means it reached Photos. A download fallback
-        // in a standalone PWA frequently does nothing visible, so the clip
-        // stays put rather than being binned on an assumption.
         if (result !== 'saved') return 'kept';
-        if (Recorder.orphan === rec) Recorder.orphan = null;
-        return Store.remove(rec.id).then(function () { return 'saved'; },
-                                         function () { return 'saved'; });
+        var i = Recorder.orphans.indexOf(rec);
+        if (i !== -1) {
+          Recorder.orphans.splice(i, 1);
+          rec.saved = true;
+          return Store.put(rec).then(function () { return 'saved'; },
+                                     function () { return 'saved'; });
+        }
+        return Store.markSaved(rec.id).then(function () { return 'saved'; },
+                                            function () { return 'saved'; });
       }, function () { return 'kept'; });
     }, function () { return 'empty'; });
   }
@@ -185,7 +200,14 @@
     return steps;
   }
 
-  /* Pending clips, as a stash listing — one entry per clip. */
+  function clock(at) {
+    var d = new Date(at);
+    return (d.getHours() < 10 ? '0' : '') + d.getHours() + ':' +
+           (d.getMinutes() < 10 ? '0' : '') + d.getMinutes();
+  }
+
+  /* Every stored clip, oldest first. A tick marks one already handed to the
+     share sheet; those are the only ones `drop` will remove. */
   function clipsTurn(rows) {
     var steps = [
       ['spin', 'Working', 700],
@@ -199,11 +221,20 @@
       var mb = Math.round(r.size / 1048576);
       steps.push([
         'result',
-        (i === 0 ? '  ⎿  ' : '     ') + 'stash@{' + i + '}: WIP (' + mb + 'M)',
+        (i === 0 ? '  ⎿  ' : '     ') + 'stash@{' + i + '}: ' + clock(r.at) +
+          ' · ' + mb + 'M' + (r.saved ? ' ✓' : ''),
         0
       ]);
     });
     return steps;
+  }
+
+  function droppedTurn(n, what) {
+    return [
+      ['spin', 'Working', 700],
+      ['tool', '⏺ Bash(git stash drop)', 800],
+      ['result', '  ⎿  Dropped ' + n + ' ' + what, 0]
+    ];
   }
 
   /* The only truthful output in the app. Everything else is canned; this
@@ -219,9 +250,12 @@
       'take:    ' + r.chunks + ' chunks / ' + r.mb + ' MB / ' + r.held,
       'stored:  ' + rows.length + ' clip(s) / ' +
         Math.round(stored / 1048576) + ' MB',
+      'unsaved: ' + rows.filter(function (x) { return !x.saved; }).length,
       'share:   ' + r.lastShare
     ];
-    if (r.orphan) lines.push('orphan:  ' + r.orphan + ' MB unstored');
+    if (r.orphanCount) {
+      lines.push('orphan:  ' + r.orphanCount + ' × ' + r.orphan + ' MB unstored');
+    }
     if (r.errors.length) {
       r.errors.forEach(function (e) { lines.push('! ' + e.slice(0, 40)); });
     } else {
@@ -298,7 +332,7 @@
       return stopped.then(function (rec) {
         // Repaint before the turn plays, so the asterisk marking a waiting
         // clip is up by the time the "build" finishes.
-        if (rec && Recorder.orphan !== rec) pending++;
+        if (rec) pending++;
         paintStatus();
         return (rec ? playTurn(T.stop) : playTurn(T.failed))
           .then(refreshPending);
@@ -320,6 +354,18 @@
 
     if (cmd === 'clips') {
       return refreshPending().then(function (rows) { return playTurn(clipsTurn(rows)); });
+    }
+
+    // Removes only clips already handed off. `drop all` takes everything, and
+    // is the one command here that can destroy an unsaved recording.
+    if (cmd === 'drop' || cmd === 'dropall') {
+      if (recorder.recording) return playTurn(nextFiller());
+      var all = cmd === 'dropall';
+      return (all ? Store.removeAll() : Store.removeSaved()).then(function (n) {
+        return refreshPending().then(function () {
+          return playTurn(droppedTurn(n, all ? 'stash entries' : 'saved'));
+        });
+      }, function () { return playTurn(T.failed); });
     }
 
     if (cmd === 'warm') {

@@ -85,7 +85,10 @@
       rows.sort(function (a, b) { return a.seq - b.seq; });
       var parts = rows.map(function (r) { return r.blob; });
       var blob = new Blob(parts, { type: type });
-      var rec = { id: clip, blob: blob, type: type, ext: ext, at: Date.now(), size: blob.size };
+      var at = Date.now();
+      var rec = { id: clip, blob: blob, type: type, ext: ext, at: at,
+                  size: blob.size, saved: false,
+                  name: 'clip-' + Store.stamp(at) + '.' + ext };
       return tx(CLIPS, 'readwrite', function (s) { s.put(rec); })
         .then(function () { return Store.dropChunks(clip); })
         .then(function () { return rec; });
@@ -115,10 +118,68 @@
     return tx(CLIPS, 'readwrite', function (s) { s.delete(id); });
   };
 
+  /* Every clip carries its own timestamped name. They used to all be
+     "clip.mp4", which meant saving a second one to Files silently replaced
+     the first. */
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+
+  Store.stamp = function (at) {
+    var d = new Date(at);
+    return String(d.getFullYear()) + pad(d.getMonth() + 1) + pad(d.getDate()) +
+      '-' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
+  };
+
+  Store.nameFor = function (rec) {
+    return rec.name || ('clip-' + Store.stamp(rec.at) + '.' + (rec.ext || 'mp4'));
+  };
+
   Store.toFile = function (rec) {
-    return new File([rec.blob], 'clip.' + (rec.ext || 'mp4'), {
+    return new File([rec.blob], Store.nameFor(rec), {
       type: rec.type || 'video/mp4',
       lastModified: rec.at
+    });
+  };
+
+  /* Flag a clip as handed off. Deliberately not a delete — iOS reports a
+     successful share before Photos has necessarily written anything, so
+     removing here has already cost one recording. */
+  Store.markSaved = function (id) {
+    return db().then(function (d) {
+      return new Promise(function (resolve, reject) {
+        var t = d.transaction(CLIPS, 'readwrite');
+        var s = t.objectStore(CLIPS);
+        var get = s.get(id);
+        get.onsuccess = function () {
+          var rec = get.result;
+          if (rec) { rec.saved = true; s.put(rec); }
+        };
+        t.oncomplete = resolve;
+        t.onerror = function () { reject(t.error); };
+      });
+    });
+  };
+
+  Store.unsaved = function () {
+    return Store.list().then(function (rows) {
+      return rows.filter(function (r) { return !r.saved; });
+    });
+  };
+
+  /* Remove every clip already handed off. Unsaved clips are never touched. */
+  Store.removeSaved = function () {
+    return Store.list().then(function (rows) {
+      var gone = rows.filter(function (r) { return r.saved; });
+      return gone.reduce(function (chain, r) {
+        return chain.then(function () { return Store.remove(r.id); });
+      }, Promise.resolve()).then(function () { return gone.length; });
+    });
+  };
+
+  Store.removeAll = function () {
+    return Store.list().then(function (rows) {
+      return rows.reduce(function (chain, r) {
+        return chain.then(function () { return Store.remove(r.id); });
+      }, Promise.resolve()).then(function () { return rows.length; });
     });
   };
 

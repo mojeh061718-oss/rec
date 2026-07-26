@@ -13,8 +13,10 @@ the transcript gives no hint that any of them is different from the others.
 | `ac1`       | starts capturing on the **0.5× ultra wide** |
 | `ac2`       | starts capturing on the **1× main camera** |
 | `done`      | stops. Stores the clip. Shows nothing. |
-| `save`      | opens the share sheet with the oldest stored clip |
-| `clips`     | reports how many clips are waiting |
+| `save`      | opens the share sheet with the oldest unsaved clip |
+| `clips`     | lists stored clips, oldest first (`✓` = already handed off) |
+| `drop`      | deletes clips already handed off |
+| `drop all`  | deletes every stored clip, saved or not |
 | `diag`      | **real** internals — the one output here that isn't theatre |
 | `update`    | drop the cached build and reload (stored clips are untouched) |
 | `warm`      | takes the camera without recording — clears the permission prompt early |
@@ -71,8 +73,10 @@ reports what actually happened:
 - **take** — chunks and megabytes captured in the current or last recording.
   `0 chunks` means the camera opened but no video ever arrived.
 - **stored** — clips on disk waiting for `save`.
-- **orphan** — a finished clip that couldn't be written to disk. Still
-  saveable, but only until the app closes, so `save` it now.
+- **unsaved** — clips not yet handed to the share sheet. This is what the
+  status-line asterisk tracks.
+- **orphan** — finished clips that couldn't be written to disk. Still
+  saveable, but only until the app closes, so `save` them now.
 - **share** — outcome of the last `save`. `AbortError` means you dismissed the
   sheet. `canShare=false` means iOS refused the file.
 - **errors** — the last three real failures.
@@ -97,10 +101,42 @@ main* · 64% context left
 
 That asterisk means at least one clip is stored and unsaved. It reads as the
 ordinary git marker for a dirty working tree, it survives closing and
-reopening the app, and it clears only once the last clip has actually reached
-Photos. If you see it, you have footage you haven't saved yet.
+reopening the app, and it clears only once every clip has been handed off. If
+you see it, you have footage you haven't saved yet.
 
-`clips` lists what's waiting.
+## Nothing is deleted on its own
+
+**`save` does not remove the clip.** It hands it to the share sheet, marks it
+handed off, and keeps it. `clips` shows everything with a `✓` against the ones
+already sent:
+
+```
+⏺ Bash(git stash list)
+  ⎿  stash@{0}: 17:40 · 182M ✓
+     stash@{1}: 17:52 · 96M
+```
+
+This is deliberate, and it is the fix for a recording that was lost. iOS
+resolves a share as soon as the sheet closes — a denied Photos permission or a
+cancelled sub-sheet still comes back as success — so deleting on that word
+throws away the only copy of a clip that never actually arrived.
+
+Once you have *seen* the video in your camera roll, `drop` clears the ones
+marked `✓`. It will not touch an unsaved clip. `drop all` takes everything and
+is the only command here that can destroy a recording you haven't saved.
+
+## Every clip has its own name
+
+Clips are named by the moment they were taken:
+
+```
+clip-20260726-174057.mp4
+```
+
+They used to all be called `clip.mp4`, which meant saving a second one into
+Files silently replaced the first. Saving into Photos was never affected —
+Photos keys on its own asset IDs, not filenames — but anything routed through
+Files was.
 
 ## Why `done` doesn't open the sheet itself
 
@@ -124,8 +160,12 @@ through. `diag` reports it as an `orphan`: saveable, but only until the app
 closes. Past 400 MB the memory copy is dropped and disk takes over, since a
 long 4K take would otherwise be large enough to bring the tab down.
 
-Nothing is deleted until iOS confirms the share actually happened. If the
-share sheet can't open at all, the clip stays exactly where it was.
+Nothing is deleted automatically at all — not on a failed share, and not on a
+successful one. Storage is only ever freed by `drop`, which you run once
+you've confirmed the video is really in your camera roll.
+
+Since clips accumulate until then, keep an eye on `stored:` in `diag` if
+you're taking several 4K takes in a row.
 
 ## Lenses
 

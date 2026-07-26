@@ -492,13 +492,16 @@
       if (!self.spilled && self.chunks.length) {
         var blob = new Blob(self.chunks, { type: type });
         self.chunks = [];
-        var rec = { id: clip, blob: blob, type: type, ext: ext,
-                    at: Date.now(), size: blob.size };
+        var at = Date.now();
+        var rec = { id: clip, blob: blob, type: type, ext: ext, at: at,
+                    size: blob.size, saved: false,
+                    name: 'clip-' + Store.stamp(at) + '.' + ext };
         // Park it in storage so it survives a force-quit, but hand it back
         // regardless — a storage failure must not lose the take.
         return Store.put(rec).catch(function (e) {
           self.diag.errors.push('save: ' + (e && e.name ? e.name : 'failed'));
-          Recorder.orphan = rec;   // last resort, this session only
+          Recorder.orphans.push(rec);   // a list: a second failure must not
+                                        // displace the first one's only copy
         }).then(function () {
           Store.dropChunks(clip);
           return rec;
@@ -543,7 +546,10 @@
       mb: Math.round((d.bytes || 0) / 1048576 * 10) / 10,
       held: d.held || 'memory',
       lastShare: Recorder.lastSave || '(none yet)',
-      orphan: Recorder.orphan ? Math.round(Recorder.orphan.size / 1048576) : 0,
+      orphan: Recorder.orphans.reduce(function (n, o) {
+        return n + Math.round(o.size / 1048576);
+      }, 0),
+      orphanCount: Recorder.orphans.length,
       errors: (d.errors || []).slice(-3)
     };
   };
@@ -603,6 +609,10 @@
     }, 30000);
     return 'downloaded';
   };
+
+  /* Clips that finished but could not be written to storage. In-memory only,
+     so they last until the app closes. */
+  Recorder.orphans = [];
 
   global.Recorder = Recorder;
 })(this);
