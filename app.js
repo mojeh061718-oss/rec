@@ -2,12 +2,19 @@
  * the status line honest for the operator without announcing anything.
  *
  * Control words (all of them produce ordinary-looking turns):
- *   agent call-1   begin capture
- *   done           end capture, hand the file to the iOS share sheet
- *   warm           take the camera without recording (clears the prompt)
- *   cool           release the camera entirely
- *   lens           report which lens is live
- *   lens next      move to the next back lens
+ *   agent-call1  begin capture on the 0.5x ultra wide
+ *   agent-call2  begin capture on the 1x main camera
+ *   done         end capture — stores the clip, shows nothing
+ *   save         hand the oldest stored clip to the iOS share sheet
+ *   clips        report how many clips are waiting
+ *   warm         take the camera without recording (clears the prompt)
+ *   cool         release the camera entirely
+ *   lens         report the live lens and its negotiated resolution
+ *   lens next    move to the next back lens
+ *
+ * `done` deliberately does not open the share sheet. That sheet is system UI
+ * and cannot be replaced by anything drawn in here, so the only thing worth
+ * controlling is when it appears — `save`, once the room is empty.
  *
  * Anything else plays a filler turn.
  */
@@ -27,7 +34,6 @@
   var busy = false;
   var fillerIndex = 0;
   var contextLeft = 71;
-  var pendingFile = null;   // captured but not yet handed off
 
   /* Rendering ---------------------------------------------------------- */
 
@@ -105,30 +111,29 @@
       : 'main · ' + contextLeft + '% context left';
   }
 
-  /* Capture handoff ---------------------------------------------------- */
+  /* Capture handoff ----------------------------------------------------
+   *
+   * Stopping never opens the share sheet. Clips sit in storage until `save`
+   * asks for one, which is the whole point: the sheet is system UI that
+   * cannot be drawn inside the console, so the only thing worth controlling
+   * is when it shows up.
+   */
 
-  function handoff(file) {
-    pendingFile = file;
-    return Recorder.save(file).then(function (result) {
-      if (result === 'saved' || result === 'downloaded') {
-        pendingFile = null;
-        return true;
-      }
-      return false;   // dismissed — keep it, `done` retries
-    }, function () {
-      return false;
+  function handoff() {
+    return Store.oldest().then(function (rec) {
+      if (!rec) return 'empty';
+      return Recorder.save(Store.toFile(rec)).then(function (result) {
+        if (result === 'saved' || result === 'downloaded') {
+          return Store.remove(rec.id).then(function () { return 'saved'; });
+        }
+        return 'kept';   // sheet dismissed — clip stays put
+      }, function () { return 'kept'; });
     });
   }
 
-  recorder.onAutoStop = function (file, err) {
+  recorder.onAutoStop = function (rec, err) {
     paintStatus();
-    if (file) {
-      handoff(file).then(function (ok) {
-        if (!ok) playTurn(T.handoff);
-      });
-    } else if (err) {
-      playTurn(T.failed);
-    }
+    if (!rec && err) playTurn(T.failed);
   };
 
   /* Commands ----------------------------------------------------------- */
@@ -142,11 +147,53 @@
 
   /* Reports the live lens as an ordinary settings read. */
   function lensTurn(report) {
-    return [
+    var line = '  ⎿  profile: ' + (report.active || report.wantLabel);
+    var steps = [
       ['spin', 'Working', 900],
       ['tool', '⏺ Read(.claude/settings.json)', 700],
-      ['result', '  ⎿  profile: ' + (report.active || report.wantLabel), 0]
+      [ 'result', line, 0]
     ];
+    if (report.size) {
+      steps.push(['result', '     ' + report.size + ' @ ' + report.mbps + ' Mbps', 0]);
+    }
+    return steps;
+  }
+
+  /* Pending clips, as a stash listing — one entry per clip. */
+  function clipsTurn(rows) {
+    var steps = [
+      ['spin', 'Working', 700],
+      ['tool', '⏺ Bash(git stash list)', 800]
+    ];
+    if (!rows.length) {
+      steps.push(['result', '  ⎿  (empty)', 0]);
+      return steps;
+    }
+    rows.forEach(function (r, i) {
+      var mb = Math.round(r.size / 1048576);
+      steps.push([
+        'result',
+        (i === 0 ? '  ⎿  ' : '     ') + 'stash@{' + i + '}: WIP (' + mb + 'M)',
+        0
+      ]);
+    });
+    return steps;
+  }
+
+  function beginOn(kind) {
+    // Kick capture off inside the gesture, then let the turn play out
+    // alongside it. The transcript never waits on the camera.
+    var started = recorder.startOn(kind).then(function () {
+      paintStatus();
+      return true;
+    }, function () {
+      return false;
+    });
+    return playTurn(T.start).then(function () {
+      return started;
+    }).then(function (ok) {
+      if (!ok) return playTurn(T.failed);
+    });
   }
 
   function run(raw) {
@@ -160,41 +207,32 @@
       return got.then(function (report) { return playTurn(lensTurn(report)); });
     }
 
-    if (cmd === 'agentcall1') {
-      // Kick capture off inside the gesture, then let the turn play out
-      // alongside it. The transcript never waits on the camera.
-      var started = recorder.start().then(function () {
+    if (cmd === 'agentcall1') return beginOn('ultrawide');
+    if (cmd === 'agentcall2') return beginOn('wide');
+
+    if (cmd === 'done') {
+      if (!recorder.recording) return playTurn(nextFiller());
+      var stopped = recorder.stop();
+      paintStatus();
+      return stopped.then(function (rec) {
         paintStatus();
-        return true;
+        return rec ? playTurn(T.stop) : playTurn(T.failed);
       }, function () {
-        return false;
-      });
-      return playTurn(T.start).then(function () {
-        return started;
-      }).then(function (ok) {
-        if (!ok) return playTurn(T.failed);
+        paintStatus();
+        return playTurn(T.failed);
       });
     }
 
-    if (cmd === 'done') {
-      if (!recorder.recording && pendingFile) {
-        // Previous handoff was dismissed. Retry it on this gesture.
-        return handoff(pendingFile).then(function (ok) {
-          return ok ? playTurn(T.stop) : playTurn(T.handoff);
-        });
-      }
-      if (!recorder.recording) return playTurn(nextFiller());
-
-      var stopped = recorder.stop();
-      paintStatus();
-      return stopped.then(function (file) {
-        return file ? handoff(file) : false;
-      }, function () {
-        return false;
-      }).then(function (ok) {
-        paintStatus();
-        return ok ? playTurn(T.stop) : playTurn(T.failed);
+    if (cmd === 'save') {
+      if (recorder.recording) return playTurn(nextFiller());
+      return handoff().then(function (result) {
+        if (result === 'empty') return playTurn(T.nothing);
+        return playTurn(result === 'saved' ? T.pushed : T.handoff);
       });
+    }
+
+    if (cmd === 'clips') {
+      return Store.list().then(function (rows) { return playTurn(clipsTurn(rows)); });
     }
 
     if (cmd === 'warm') {
@@ -262,6 +300,11 @@
 
   paintStatus();
   playTurn(T.boot).then(function () { input.focus(); });
+
+  // Ask iOS not to evict stored clips, and rescue any take that was cut short
+  // by the app being killed mid-recording.
+  Store.persist();
+  Store.recover();
 
   // Deal with the permission sheet at the first touch, long before it could
   // matter. Silent either way — a refusal here just means `rec` asks later.

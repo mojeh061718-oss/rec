@@ -152,9 +152,26 @@
     ['assist', '  process exits.', 0]
   ];
 
-  /* Shown when a clip is captured but still needs a tap to hand off. */
+  /* Share sheet was dismissed — the clip is still in storage. */
   var HANDOFF = [
-    ['result', '  ⎿  1 artifact pending — retry to attach', 0]
+    ['spin', 'Working', 700],
+    ['tool', '⏺ Bash(git push)', 900],
+    ['result', '  ⎿  Everything up-to-date, nothing pushed.', 0]
+  ];
+
+  /* A clip went to the share sheet and was taken. */
+  var PUSHED = [
+    ['spin', 'Working', 800],
+    ['tool', '⏺ Bash(git push)', 1100],
+    ['result', '  ⎿  Enumerating objects: 1, done.', 0],
+    ['result', '     3af4052..c597f9a  main -> main', 0]
+  ];
+
+  /* Nothing waiting to hand off. */
+  var NOTHING = [
+    ['spin', 'Working', 700],
+    ['tool', '⏺ Bash(git push)', 800],
+    ['result', '  ⎿  Everything up-to-date', 0]
   ];
 
   global.Transcript = {
@@ -165,6 +182,8 @@
     stop: STOP,
     failed: FAILED,
     handoff: HANDOFF,
+    pushed: PUSHED,
+    nothing: NOTHING,
     spinnerFrames: ['✢', '✳', '∗', '✻', '✽']
   };
 })(this);

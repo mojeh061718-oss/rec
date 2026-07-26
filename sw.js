@@ -2,13 +2,14 @@
  * offline. It never registers notifications, sync, or any background task —
  * nothing here can produce a sound, a banner, or a badge.
  */
-var CACHE = 'terminal-v1';
+var CACHE = 'terminal-v2';
 var SHELL = [
   './',
   './index.html',
   './style.css',
   './app.js',
   './transcript.js',
+  './store.js',
   './recorder.js',
   './manifest.webmanifest',
   './icons/icon-192.png',

@@ -12,8 +12,13 @@
 (function (global) {
   'use strict';
 
-  var VIDEO_BPS = 5000000;
-  var AUDIO_BPS = 128000;
+  // Bits per pixel per frame. 0.11 puts 4K30 near 27 Mbps and 1080p30 near
+  // 6.8 Mbps — comparable to what the stock camera app writes, and well past
+  // the point where more bitrate stops being visible.
+  var BPP = 0.11;
+  var MIN_BPS = 4000000;
+  var MAX_BPS = 40000000;
+  var AUDIO_BPS = 256000;       // headroom for singing, not speech
   var TIMESLICE_MS = 4000;      // flush cadence — bounds loss on interruption
   var MAX_MS = 25 * 60 * 1000;  // failsafe stop
 
@@ -23,8 +28,10 @@
   var CONSTRAINTS = {
     video: {
       facingMode: { ideal: 'environment' },
-      width: { ideal: 1920 },
-      height: { ideal: 1080 },
+      // Ask for 4K and take whatever the lens actually gives back. The
+      // ultra wide may cap lower; `lens` reports what was really negotiated.
+      width: { ideal: 3840 },
+      height: { ideal: 2160 },
       frameRate: { ideal: 30 }
     },
     audio: {
@@ -38,13 +45,28 @@
     }
   };
 
+  // HEVC first: it is what the phone's own camera writes, Photos handles it
+  // natively, and it holds more detail per bit than H.264 at 4K.
   var MIME_CANDIDATES = [
+    'video/mp4;codecs=hvc1.1.6.L120.90,mp4a.40.2',
+    'video/mp4;codecs=hvc1,mp4a.40.2',
+    'video/mp4;codecs=avc1.640033,mp4a.40.2',
     'video/mp4;codecs=avc1.640028,mp4a.40.2',
     'video/mp4;codecs=avc1,mp4a.40.2',
     'video/mp4',
     'video/webm;codecs=h264,opus',
     'video/webm'
   ];
+
+  /* Bitrate follows the resolution actually negotiated, not the one asked
+     for. A fixed number would starve 4K and waste space on 1080p. */
+  function bitrateFor(track) {
+    var s = track && track.getSettings ? track.getSettings() : null;
+    var w = (s && s.width) || 1920;
+    var h = (s && s.height) || 1080;
+    var fps = (s && s.frameRate) || 30;
+    return Math.max(MIN_BPS, Math.min(MAX_BPS, Math.round(w * h * fps * BPP)));
+  }
 
   function pickMime() {
     if (typeof MediaRecorder === 'undefined') return null;
@@ -167,9 +189,30 @@
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       return Promise.reject(new Error('capture unavailable'));
     }
-    return this._open(null)
+    // Once the device list is known, open the wanted lens directly. Only the
+    // very first warm has to open blind and then correct itself, and that one
+    // happens long before a trigger word does.
+    var known = this.cameras && this.cameras.length ? this._pick(this.cameras) : null;
+    return this._open(known ? known.id : null)
+      .catch(function () { return self._open(null); })   // stale device id
       .then(function (stream) { return self._selectLens(stream); })
       .then(function (stream) { self._attach(stream); });
+  };
+
+  /* Best available match for the stored preference. */
+  Recorder.prototype._pick = function (cams) {
+    var want = storedLens();
+    for (var i = 0; i < cams.length; i++) {
+      if (cams[i].kind === want) return cams[i];
+    }
+    // Asked for ultra wide and there's no discrete one: the virtual device
+    // at minimum zoom is the same lens.
+    if (want === 'ultrawide') {
+      for (var j = 0; j < cams.length; j++) {
+        if (cams[j].kind === 'virtual') return cams[j];
+      }
+    }
+    return cams[0];
   };
 
   /* One getUserMedia call, optionally pinned to a device. */
@@ -196,19 +239,7 @@
       self.cameras = cams;
       if (!cams.length) return stream;
 
-      var target = null;
-      for (var i = 0; i < cams.length; i++) {
-        if (cams[i].kind === want) { target = cams[i]; break; }
-      }
-      // Asked for ultra wide and there's no discrete one: the virtual
-      // device at minimum zoom is the same lens.
-      if (!target && want === 'ultrawide') {
-        for (var j = 0; j < cams.length; j++) {
-          if (cams[j].kind === 'virtual') { target = cams[j]; break; }
-        }
-      }
-      if (!target) target = cams[0];
-
+      var target = self._pick(cams);
       var track = stream.getVideoTracks()[0];
       var current = track && track.getSettings ? track.getSettings().deviceId : null;
 
@@ -245,13 +276,19 @@
     return !!this.stream;
   };
 
-  /* Which lens is live, for the operator's own confirmation. */
+  /* Which lens is live and at what resolution it actually negotiated —
+     worth checking once on the real phone, since 4K is a request, not a
+     guarantee, and it varies by lens. */
   Recorder.prototype.lensReport = function () {
     var want = storedLens();
     var cams = this.cameras || [];
+    var track = this.stream ? this.stream.getVideoTracks()[0] : null;
+    var s = track && track.getSettings ? track.getSettings() : null;
     return {
       want: want,
       wantLabel: LENS_LABELS[want] || want,
+      size: s && s.width ? s.width + 'x' + s.height : null,
+      mbps: track ? Math.round(bitrateFor(track) / 100000) / 10 : null,
       active: this.lens ? (LENS_LABELS[this.lens.kind] || this.lens.kind) : null,
       available: cams.map(function (c) {
         return { kind: c.kind, label: LENS_LABELS[c.kind] || c.kind };
@@ -286,6 +323,20 @@
                             function () { return self.lensReport(); });
   };
 
+  /* Switch to a named lens and begin. Used by the two trigger words. */
+  Recorder.prototype.startOn = function (kind) {
+    var self = this;
+    if (this.recording) return Promise.resolve();
+    if (storedLens() === kind && this.stream) return this.start();
+
+    storeLens(kind);
+    if (this.stream) {
+      this.stream.getTracks().forEach(function (t) { try { t.stop(); } catch (e) {} });
+      this.stream = null;
+    }
+    return this.warm().then(function () { return self.start(); });
+  };
+
   Recorder.prototype.start = function () {
     var self = this;
     if (this.recording) return Promise.resolve();
@@ -293,7 +344,10 @@
       var mime = pickMime();
       if (mime === null) throw new Error('MediaRecorder unavailable');
 
-      var opts = { videoBitsPerSecond: VIDEO_BPS, audioBitsPerSecond: AUDIO_BPS };
+      var opts = {
+        videoBitsPerSecond: bitrateFor(self.stream.getVideoTracks()[0]),
+        audioBitsPerSecond: AUDIO_BPS
+      };
       if (mime) opts.mimeType = mime;
 
       try {
@@ -302,9 +356,20 @@
         self.recorder = new MediaRecorder(self.stream);  // last-ditch defaults
       }
 
-      self.chunks = [];
+      // Each timeslice goes straight to disk. Writes are chained so they
+      // land in order and never overlap, and the take never accumulates in
+      // memory — at 4K it would be roughly 180 MB per minute.
+      self.clipId = 'c' + Date.now();
+      self.seq = 0;
+      self.writes = Promise.resolve();
       self.recorder.ondataavailable = function (ev) {
-        if (ev.data && ev.data.size) self.chunks.push(ev.data);
+        if (!ev.data || !ev.data.size) return;
+        var seq = self.seq++;
+        var clip = self.clipId;
+        var blob = ev.data;
+        self.writes = self.writes.then(function () {
+          return Store.putChunk(clip, seq, blob);
+        }).catch(function () { /* keep the chain alive */ });
       };
       self.recorder.start(TIMESLICE_MS);
       self.recording = true;
@@ -333,7 +398,8 @@
     if (this.stopTimer) { clearTimeout(this.stopTimer); this.stopTimer = null; }
     this._unlock();
 
-    return new Promise(function (resolve, reject) {
+    var clip = this.clipId;
+    return new Promise(function (resolve) {
       var rec = self.recorder;
       if (!rec) { resolve(null); return; }
       self.recorder = null;
@@ -342,15 +408,7 @@
       var done = function () {
         if (settled) return;
         settled = true;
-        var mime = rec.mimeType || 'video/mp4';
-        var type = mime.split(';')[0];
-        if (!self.chunks.length) { reject(new Error('no data captured')); return; }
-        var blob = new Blob(self.chunks, { type: type });
-        self.chunks = [];
-        resolve(new File([blob], 'clip.' + extFor(type), {
-          type: type,
-          lastModified: Date.now()
-        }));
+        resolve(rec.mimeType || 'video/mp4');
       };
 
       rec.onstop = done;
@@ -362,6 +420,13 @@
         if (rec.state !== 'inactive') rec.stop();
         else done();
       } catch (e) { done(); }
+    }).then(function (mime) {
+      if (!mime) return null;
+      var type = mime.split(';')[0];
+      // Let the last timeslice land before stitching.
+      return self.writes.then(function () {
+        return Store.assemble(clip, type, extFor(type));
+      });
     });
   };
 
