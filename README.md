@@ -82,7 +82,27 @@ Run it after `done` if you're unsure a take worked.
 Anything else you type plays a filler turn, so you can keep typing naturally
 for as long as you want.
 
-## Saving, and why `done` doesn't
+## Saving is two steps
+
+**`done` does not put anything in your camera roll.** It stops the recording
+and stores the clip. `save` is what hands it to Photos. Forgetting the second
+step is the easiest way to think this is broken — the take is sitting safely in
+storage while the screen says the build is clean.
+
+The status line tells you when something is waiting:
+
+```
+main* · 64% context left
+```
+
+That asterisk means at least one clip is stored and unsaved. It reads as the
+ordinary git marker for a dirty working tree, it survives closing and
+reopening the app, and it clears only once the last clip has actually reached
+Photos. If you see it, you have footage you haven't saved yet.
+
+`clips` lists what's waiting.
+
+## Why `done` doesn't open the sheet itself
 
 The iOS share sheet is system UI. Nothing drawn inside the app can replace it,
 and no web app can write to Photos without it. So the only thing worth
@@ -163,10 +183,13 @@ instead of
 main · 64% context left
 ```
 
-Two chevrons, 11px, dim grey, on the bottom bar. That's the whole tell — it
+Two chevrons, 10px, dim grey, on the bottom bar. That's the whole tell — it
 exists so you can confirm it's actually rolling rather than discovering a
 failed take afterwards. Nothing else on screen changes: no timer, no colour
 shift, no dot, no border.
+
+The `*` marking unsaved clips can appear alongside it (`main* ⏵⏵ · …`). Both
+read as ordinary git status markers.
 
 ## What it will not do
 

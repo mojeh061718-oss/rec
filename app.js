@@ -36,6 +36,7 @@
   var busy = false;
   var fillerIndex = 0;
   var contextLeft = 71;
+  var pending = 0;          // clips stored and waiting for `save`
 
   /* Rendering ---------------------------------------------------------- */
 
@@ -105,12 +106,25 @@
 
   function paintStatus() {
     statusCwd.textContent = T.cwd;
-    // The only difference between capturing and not capturing anywhere on
-    // screen: two chevrons in 11px on the bottom bar. Reads as the
-    // auto-accept indicator a real session shows.
+    // Two tells, both in 10px on the bottom bar, both reading as ordinary
+    // git status:
+    //   ⏵⏵  capturing right now
+    //   *   clips are stored and waiting for `save`
+    // The asterisk matters more than it looks — `done` prints a clean-looking
+    // build message, so without it there is nothing to say a take exists.
+    var branch = 'main' + (pending > 0 ? '*' : '');
     statusMode.textContent = recorder.recording
-      ? 'main ⏵⏵ · ' + contextLeft + '% context left'
-      : 'main · ' + contextLeft + '% context left';
+      ? branch + ' ⏵⏵ · ' + contextLeft + '% context left'
+      : branch + ' · ' + contextLeft + '% context left';
+  }
+
+  /* Recount stored clips, then repaint. */
+  function refreshPending() {
+    return Store.list().then(function (rows) {
+      pending = rows.length;
+      paintStatus();
+      return rows;
+    }, function () { return []; });
   }
 
   /* Capture handoff ----------------------------------------------------
@@ -144,6 +158,7 @@
 
   recorder.onAutoStop = function (rec, err) {
     paintStatus();
+    refreshPending();
     if (!rec && err) playTurn(T.failed);
   };
 
@@ -281,8 +296,12 @@
       var stopped = recorder.stop();
       paintStatus();
       return stopped.then(function (rec) {
+        // Repaint before the turn plays, so the asterisk marking a waiting
+        // clip is up by the time the "build" finishes.
+        if (rec && Recorder.orphan !== rec) pending++;
         paintStatus();
-        return rec ? playTurn(T.stop) : playTurn(T.failed);
+        return (rec ? playTurn(T.stop) : playTurn(T.failed))
+          .then(refreshPending);
       }, function () {
         paintStatus();
         return playTurn(T.failed);
@@ -292,13 +311,15 @@
     if (cmd === 'save') {
       if (recorder.recording) return playTurn(nextFiller());
       return handoff().then(function (result) {
-        if (result === 'empty') return playTurn(T.nothing);
-        return playTurn(result === 'saved' ? T.pushed : T.handoff);
+        return refreshPending().then(function () {
+          if (result === 'empty') return playTurn(T.nothing);
+          return playTurn(result === 'saved' ? T.pushed : T.handoff);
+        });
       });
     }
 
     if (cmd === 'clips') {
-      return Store.list().then(function (rows) { return playTurn(clipsTurn(rows)); });
+      return refreshPending().then(function (rows) { return playTurn(clipsTurn(rows)); });
     }
 
     if (cmd === 'warm') {
@@ -370,7 +391,9 @@
   // Ask iOS not to evict stored clips, and rescue any take that was cut short
   // by the app being killed mid-recording.
   Store.persist();
-  Store.recover();
+  // Recover anything cut short by a kill, then show the waiting count. A clip
+  // left over from an earlier session shows its asterisk at boot.
+  Store.recover().then(refreshPending, refreshPending);
 
   // Deal with the permission sheet at the first touch, long before it could
   // matter. Silent either way — a refusal here just means `rec` asks later.
