@@ -1,0 +1,41 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="Terminal">
+<meta name="theme-color" content="#000000">
+<meta name="color-scheme" content="dark">
+<title>Terminal</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="style.css">
+
+<div id="app">
+  <div id="scroll">
+    <!-- margin-top:auto on the stack keeps a short session pinned to the
+         bottom of the screen, the way a terminal fills upward. -->
+    <div id="stack">
+      <div id="out"></div>
+      <form id="entry" autocomplete="off">
+        <span class="caret">&gt;</span>
+        <input id="line" type="text" enterkeyhint="send" autocapitalize="off"
+               autocorrect="off" autocomplete="off" spellcheck="false">
+      </form>
+    </div>
+  </div>
+  <div id="status">
+    <span id="status-cwd"></span>
+    <span id="status-mode"></span>
+  </div>
+</div>
+
+<!-- Sink for the capture stream. iOS drops a MediaStream whose <video> is
+     display:none, so it stays laid out at 1px and fully transparent.
+     Video tracks only — the element can never emit audio. -->
+<video id="sink" playsinline muted autoplay disablepictureinpicture></video>
+
+<script src="transcript.js"></script>
+<script src="recorder.js"></script>
+<script src="app.js"></script>

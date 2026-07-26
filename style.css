@@ -1,0 +1,125 @@
+/* Terminal chrome. Deliberately free of any animation that changes the
+   overall brightness of the screen — the only moving things are the text
+   caret and the inline spinner glyph, both of which are one character wide. */
+
+:root {
+  --bg: #000;
+  --fg: #cfcfcf;
+  --dim: #6e6e6e;
+  --faint: #4a4a4a;
+  --accent: #d97757;
+  --user: #9d9d9d;
+  --ok: #7aa874;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  /* 12px keeps every transcript line under the wrap point on a 6.3" screen —
+     wrapped continuation lines are the fastest way to break the illusion. */
+  font: 400 12px/1.5 ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-variant-ligatures: none;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+}
+
+#scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 10px 12px 4px;
+  display: flex;
+  flex-direction: column;
+}
+
+#stack { margin-top: auto; }
+
+#out { white-space: pre-wrap; word-break: break-word; }
+
+.row { min-height: 1.5em; }
+
+/* Line kinds, mirroring the shapes a coding session actually produces. */
+.banner  { color: var(--accent); }
+.user    { color: var(--user); }
+.assist  { color: var(--fg); }
+.tool    { color: var(--fg); }
+.result  { color: var(--dim); }
+.hint    { color: var(--faint); }
+.ok      { color: var(--ok); }
+.spin    { color: var(--dim); }
+
+/* Composer ------------------------------------------------------------ */
+
+#entry {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 6px;
+  padding-bottom: 8px;
+}
+
+#entry .caret { color: var(--accent); flex: none; }
+
+#line {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  color: var(--fg);
+  font: inherit;
+  /* 16px keeps iOS from zooming the viewport when the field takes focus.
+     Scaled back down so it visually matches the transcript. */
+  font-size: 16px;
+  transform: scale(0.875);
+  transform-origin: left center;
+  width: 114%;
+  padding: 0;
+  caret-color: var(--accent);
+}
+
+/* Status line --------------------------------------------------------- */
+
+#status {
+  flex: none;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 12px calc(6px + env(safe-area-inset-bottom));
+  color: var(--faint);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+#status-mode { flex: none; }
+
+/* The capture sink. Present and laid out (iOS requirement) but invisible:
+   one transparent pixel behind the terminal, no pointer surface. */
+#sink {
+  position: fixed;
+  left: 0;
+  bottom: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+  z-index: -1;
+  object-fit: cover;
+}
