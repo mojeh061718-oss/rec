@@ -17,6 +17,7 @@ the transcript gives no hint that any of them is different from the others.
 | `save`      | retries the sheet for the oldest unsaved clip |
 | `save all`  | puts every unsaved clip into one sheet |
 | `files`     | saves the oldest waiting clip to Files, bypassing the sheet |
+| `q`         | reports capture quality; `q fair` / `q high` to change it |
 | `clips`     | lists stored clips, oldest first (`✓` = already handed off) |
 | `pending`   | lists only the clips **not** yet saved |
 | `resave`    | clears every `✓` so all clips queue up again |
@@ -154,10 +155,15 @@ Past a few hundred megabytes that kills the app outright — not an error that
 can be caught and reported, the process simply goes. At 4K, about two minutes
 of video is enough to reach that point.
 
-So any clip over **350 MB** skips the sheet and is written to **Files**
+So any clip over **250 MB** skips the sheet and is written to **Files**
 instead, using a reference to the data rather than a copy. The reply says
 `wrote to dist/` when this happens. Such a clip always goes on its own; putting
 it in a batch would only guarantee the crash.
+
+That threshold corrects itself. The real limit belongs to the phone, not to a
+number worth guessing — so if a share ever does kill the app, the breadcrumb it
+left behind names the size that did it, and the cap drops well under that and
+stays there. It only ever tightens.
 
 To get one of those into Photos: open the **Files** app, find the clip in
 Downloads, then share it → **Save Video**. The Files app streams it properly,
@@ -300,7 +306,25 @@ unsure she'll stay in frame.
 
 ## Quality
 
-It asks for 4K30 and takes whatever the lens actually gives back — 4K is a
+Two settings, switched with `q fair` and `q high`. `q` on its own reports the
+current one.
+
+| | resolution | roughly |
+| --- | --- | --- |
+| `q high` (default) | 4K | 200 MB per minute |
+| `q fair` | 1080p | 50 MB per minute |
+
+This is worth thinking about, because file size decides how a clip can be
+saved. At 4K, a take of much more than a minute lands past the share sheet's
+limit and has to go out through Files, which means moving it into Photos by
+hand afterwards. At 1080p a five minute take is around 250 MB and goes straight
+to the camera roll in one tap.
+
+1080p from an iPhone is still a good-looking recording of a child singing in a
+room. 4K mainly buys detail you'd need a large screen to see — and costs you
+the simple save path. If the takes are long, `q fair` is the better trade.
+
+It asks for the chosen resolution and takes whatever the lens actually gives back — 4K is a
 request, not a guarantee, and it differs per lens. Bitrate then follows the
 resolution that was really negotiated rather than a fixed number, at roughly
 27 Mbps for 4K and 6.8 Mbps for 1080p, which is comparable to what the stock

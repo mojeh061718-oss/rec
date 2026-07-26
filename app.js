@@ -9,6 +9,7 @@
  *   save         hand the oldest unsaved clip to the iOS share sheet
  *   save all     put every unsaved clip into a single sheet
  *   files        save the oldest waiting clip to Files, bypassing the sheet
+ *   q            report capture quality; `q fair` / `q high` to change it
  *   clips        list stored clips, oldest first, ✓ = already handed off
  *   pending      list only the clips not yet handed off
  *   resave       clear every handed-off tick so they all queue again
@@ -170,7 +171,26 @@
    * ever appears — there is no error to catch, the process simply goes. Past
    * this size the clip is streamed to Files instead, which references the data
    * rather than copying it. */
-  var SHEET_MAX_BYTES = 350 * 1024 * 1024;
+  var SHEET_MAX_BYTES = 250 * 1024 * 1024;
+  var SHEET_FLOOR_BYTES = 60 * 1024 * 1024;
+  var CAP_KEY = 'terminal.sheetcap';
+
+  /* The real limit is a property of the phone, not a number worth guessing.
+     If a share ever kills the app, the breadcrumb it left behind names the
+     size that did it — so the cap drops below that and stays there. */
+  function loadCap() {
+    try {
+      var v = parseInt(localStorage.getItem(CAP_KEY), 10);
+      if (v > 0) SHEET_MAX_BYTES = Math.max(SHEET_FLOOR_BYTES, v);
+    } catch (e) {}
+  }
+
+  function learnCap(mb) {
+    var cap = Math.max(SHEET_FLOOR_BYTES, Math.floor(mb * 1048576 * 0.6));
+    if (cap >= SHEET_MAX_BYTES) return;
+    SHEET_MAX_BYTES = cap;
+    try { localStorage.setItem(CAP_KEY, String(cap)); } catch (e) {}
+  }
 
   /* Offer one specific clip. */
   function shareRecord(rec, forceStream) {
@@ -550,6 +570,17 @@
       }, function () { return playTurn(T.failed); });
     }
 
+    if (cmd === 'q' || cmd === 'qhigh' || cmd === 'qfair') {
+      if (cmd !== 'q') Recorder.setQuality(cmd === 'qhigh' ? 'high' : 'fair');
+      var q = Recorder.quality();
+      return playTurn([
+        ['spin', 'Working', 800],
+        ['tool', '⏺ Read(.claude/settings.json)', 700],
+        ['result', '  ⎿  quality: ' + q.label, 0],
+        ['result', '     about ' + q.perMinute + ' MB per minute', 0]
+      ]);
+    }
+
     // Forces the Files route for the oldest waiting clip, whatever its size.
     // The escape hatch if the share sheet is killing the app.
     if (cmd === 'files' || cmd === 'dl') {
@@ -674,11 +705,16 @@
     .then(refreshPending, refreshPending);
 
   // Anything left here means the app died mid-operation last time.
+  loadCap();
   try {
     var stuck = localStorage.getItem('terminal.inflight');
     if (stuck) {
       lastCrash = stuck;
       localStorage.removeItem('terminal.inflight');
+      // Only a share sheet can take the app down this way; the Files route
+      // never holds the whole file. Pull the cap under whatever killed it.
+      var m = /^save\b.*?(\d+)M$/.exec(stuck);
+      if (m) learnCap(parseInt(m[1], 10));
     }
   } catch (e) {}
 

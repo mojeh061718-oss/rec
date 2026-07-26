@@ -27,12 +27,26 @@
 
   var LENS_KEY = 'terminal.lens';
   var DEFAULT_LENS = 'ultrawide';
+  var QUALITY_KEY = 'terminal.quality';
+
+  /* 4K runs about 200 MB a minute, which is what puts a normal-length take
+     past the size the share sheet can survive. `fair` trades resolution for
+     files that go straight to Photos without the detour through Files. */
+  var QUALITY = {
+    high: { width: 3840, height: 2160, label: '4K' },
+    fair: { width: 1920, height: 1080, label: '1080p' }
+  };
+
+  function storedQuality() {
+    try { return QUALITY[localStorage.getItem(QUALITY_KEY)] ? localStorage.getItem(QUALITY_KEY) : 'high'; }
+    catch (e) { return 'high'; }
+  }
 
   var CONSTRAINTS = {
     video: {
       facingMode: { ideal: 'environment' },
-      // Ask for 4K and take whatever the lens actually gives back. The
-      // ultra wide may cap lower; `lens` reports what was really negotiated.
+      // Asked for, not guaranteed — the lens gives back what it can, and
+      // `lens` reports what was actually negotiated.
       width: { ideal: 3840 },
       height: { ideal: 2160 },
       frameRate: { ideal: 30 }
@@ -236,6 +250,9 @@
   Recorder.prototype._open = function (deviceId, facing) {
     var video = {};
     for (var k in CONSTRAINTS.video) video[k] = CONSTRAINTS.video[k];
+    var q = QUALITY[storedQuality()];
+    video.width = { ideal: q.width };
+    video.height = { ideal: q.height };
     if (deviceId) {
       delete video.facingMode;
       video.deviceId = { exact: deviceId };
@@ -675,6 +692,19 @@
   /* Clips that finished but could not be written to storage. In-memory only,
      so they last until the app closes. */
   Recorder.orphans = [];
+
+  /* Switch capture quality. Takes effect on the next recording. */
+  Recorder.setQuality = function (name) {
+    if (!QUALITY[name]) return storedQuality();
+    try { localStorage.setItem(QUALITY_KEY, name); } catch (e) {}
+    return name;
+  };
+
+  Recorder.quality = function () {
+    var n = storedQuality();
+    return { name: n, label: QUALITY[n].label,
+             perMinute: n === 'high' ? 200 : 50 };
+  };
 
   global.Recorder = Recorder;
 })(this);
