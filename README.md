@@ -16,6 +16,8 @@ the transcript gives no hint that any of them is different from the others.
 | `done`      | stops, stores the clip, and opens the share sheet |
 | `save`      | retries the sheet for the oldest unsaved clip |
 | `clips`     | lists stored clips, oldest first (`✓` = already handed off) |
+| `pending`   | lists only the clips **not** yet saved |
+| `clear`     | wipes the screen and deletes clips already handed off |
 | `drop`      | deletes clips already handed off |
 | `drop all`  | deletes every stored clip, saved or not |
 | `diag`      | **real** internals — the one output here that isn't theatre |
@@ -81,8 +83,22 @@ reports what actually happened:
 - **share** — outcome of the last `save`. `AbortError` means you dismissed the
   sheet. `canShare=false` means iOS refused the file.
 - **errors** — the last three real failures.
+- **died during** — only appears if the app was killed mid-operation last
+  launch. It names what was in flight, so a crash leaves evidence behind
+  instead of vanishing with the tab.
 
 Run it after `done` if you're unsure a take worked.
+
+## A note on storage layout
+
+A clip's video and the record describing it are kept in separate places. This
+matters more than it sounds: listing clips happens on launch, after every take,
+and inside `save` itself, and when the two were stored together every one of
+those pulled every video out of the database just to count them. A few 4K takes
+was enough to take the app down. A clip's video is now read once, at the moment
+it is handed to the share sheet, and nowhere else.
+
+Clips written by earlier builds are moved across automatically on launch.
 
 Anything else you type plays a filler turn, so you can keep typing naturally
 for as long as you want.
@@ -131,6 +147,13 @@ This is deliberate, and it is the fix for a recording that was lost. iOS
 resolves a share as soon as the sheet closes — a denied Photos permission or a
 cancelled sub-sheet still comes back as success — so deleting on that word
 throws away the only copy of a clip that never actually arrived.
+
+`pending` narrows that list to just the ones still waiting, which is usually
+the question you actually have.
+
+`clear` wipes the screen back to a fresh session and clears out the `✓` ones at
+the same time. It will not delete an unsaved clip — after `clear`, anything
+still showing under `pending` is still there.
 
 Clips marked `✓` are cleared automatically two days after they were saved, so
 storage doesn't need managing by hand. Unsaved clips are never pruned, at any

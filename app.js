@@ -7,7 +7,9 @@
  *   f1           begin capture on the front camera
  *   done         end capture, store the clip, and open the share sheet
  *   save         hand the oldest stored clip to the iOS share sheet
- *   clips        list stored clips, newest last, ✓ = already handed off
+ *   clips        list stored clips, oldest first, ✓ = already handed off
+ *   pending      list only the clips not yet handed off
+ *   clear        wipe the screen and delete clips already handed off
  *   drop         delete clips already handed off
  *   drop all     delete every stored clip, saved or not
  *   diag         real internals — the one output here that isn't theatre
@@ -40,6 +42,7 @@
   var fillerIndex = 0;
   var contextLeft = 71;
   var pending = 0;          // clips stored and waiting for `save`
+  var lastCrash = null;     // operation in flight when the app last died
 
   /* Rendering ---------------------------------------------------------- */
 
@@ -148,20 +151,42 @@
    * already cost one recording. Clips are marked saved and kept; `drop`
    * removes them when you have confirmed they are in the camera roll.
    */
+  /* Breadcrumb that outlives a crash. If the tab dies mid-share this is the
+     only evidence left, and `diag` reports it on the next launch. */
+  function mark(what) {
+    try {
+      if (what) localStorage.setItem('terminal.inflight', what);
+      else localStorage.removeItem('terminal.inflight');
+    } catch (e) {}
+  }
+
   /* Offer one specific clip to the share sheet. */
   function shareRecord(rec) {
-    return Recorder.save(Store.toFile(rec)).then(function (result) {
-      if (result !== 'saved') return 'kept';
-      var i = Recorder.orphans.indexOf(rec);
-      if (i !== -1) Recorder.orphans.splice(i, 1);
-      rec.saved = true;
-      // Wait for the background write before marking, so the flag can't be
-      // overwritten by a put that is still in flight.
-      return (recorder.lastWrite || Promise.resolve())
-        .catch(function () {})
-        .then(function () { return Store.put(rec); })
-        .then(function () { return 'saved'; }, function () { return 'saved'; });
-    }, function () { return 'kept'; });
+    var mb = Math.round((rec.size || 0) / 1048576);
+    mark('save ' + Store.nameFor(rec) + ' ' + mb + 'M');
+
+    return Store.fileFor(rec).then(function (file) {
+      if (!file) { mark(null); return 'missing'; }
+      return Recorder.save(file).then(function (result) {
+        mark(null);
+        if (result !== 'saved') return 'kept';
+        var i = Recorder.orphans.indexOf(rec);
+        rec.saved = true;
+        if (i !== -1) {
+          // Never made it to storage; put it there now that it is safe.
+          Recorder.orphans.splice(i, 1);
+          return Store.put(rec).then(function () { return 'saved'; },
+                                     function () { return 'saved'; });
+        }
+        // Wait for the background write before marking, so the flag can't be
+        // overwritten by a put still in flight. Metadata only — the video is
+        // already stored and is not rewritten.
+        return (recorder.lastWrite || Promise.resolve())
+          .catch(function () {})
+          .then(function () { return Store.putMeta(rec); })
+          .then(function () { return 'saved'; }, function () { return 'saved'; });
+      }, function () { mark(null); return 'kept'; });
+    }, function () { mark(null); return 'kept'; });
   }
 
   /* Oldest clip still waiting. Orphans finished but could not be stored and
@@ -261,6 +286,7 @@
     if (r.orphanCount) {
       lines.push('orphan:  ' + r.orphanCount + ' × ' + r.orphan + ' MB unstored');
     }
+    if (lastCrash) lines.push('! died during: ' + lastCrash.slice(0, 34));
     if (r.errors.length) {
       r.errors.forEach(function (e) { lines.push('! ' + e.slice(0, 40)); });
     } else {
@@ -359,8 +385,30 @@
       return handoff().then(function (result) {
         return refreshPending().then(function () {
           if (result === 'empty') return playTurn(T.nothing);
+          if (result === 'missing') return playTurn(T.failed);
           return playTurn(result === 'saved' ? T.pushed : T.handoff);
         });
+      });
+    }
+
+    // Wipes the screen and clears out clips already handed off. Unsaved
+    // recordings are never touched — `drop all` is still the only way to
+    // remove those, deliberately.
+    if (cmd === 'clear') {
+      if (recorder.recording) { out.textContent = ''; return Promise.resolve(); }
+      return Store.removeSaved().then(function (n) {
+        return refreshPending().then(function () {
+          out.textContent = '';
+          return playTurn(T.boot).then(function () {
+            if (n) emit('result', '  ⎿  Dropped ' + n + ' saved');
+          });
+        });
+      }, function () { out.textContent = ''; return playTurn(T.boot); });
+    }
+
+    if (cmd === 'pending' || cmd === 'unsaved') {
+      return refreshPending().then(function (rows) {
+        return playTurn(clipsTurn(rows.filter(function (r) { return !r.saved; })));
       });
     }
 
@@ -452,9 +500,19 @@
   // Recover anything cut short by a kill, clear out clips that were saved
   // more than two days ago, then show the waiting count. A clip left over
   // from an earlier session shows its asterisk at boot.
-  Store.recover()
+  Store.migrate()
+    .then(function () { return Store.recover(); })
     .then(function () { return Store.prune(48 * 60 * 60 * 1000); })
     .then(refreshPending, refreshPending);
+
+  // Anything left here means the app died mid-operation last time.
+  try {
+    var stuck = localStorage.getItem('terminal.inflight');
+    if (stuck) {
+      lastCrash = stuck;
+      localStorage.removeItem('terminal.inflight');
+    }
+  } catch (e) {}
 
   // Deal with the permission sheet at the first touch, long before it could
   // matter. Silent either way — a refusal here just means `rec` asks later.

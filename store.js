@@ -11,12 +11,21 @@
   'use strict';
 
   var DB_NAME = 'terminal';
-  var DB_VERSION = 2;
+  var DB_VERSION = 3;
   var CHUNKS = 'chunks';   // keyPath [clip, seq] — one record per timeslice
-  var CLIPS = 'clips';     // keyPath id — assembled, ready to hand off
+  var CLIPS = 'clips';     // keyPath id — metadata ONLY, never video data
+  var BLOBS = 'blobs';     // keyPath id — the video, read only when saving
   var META = 'meta';       // keyPath clip — written before the first chunk, so
                            // a take interrupted by a crash can be rebuilt with
                            // the right codec and its real start time
+
+  /* Video lives apart from the record that describes it.
+   *
+   * They used to be one record, so listing clips — which happens on launch,
+   * after every take, and inside save itself — pulled every video out of the
+   * database just to count them. A handful of 4K takes was enough to bring
+   * the whole app down. Metadata is small and read constantly; a clip's video
+   * is read once, when it is actually being handed to the share sheet. */
 
   var dbp = null;
 
@@ -34,6 +43,9 @@
         }
         if (!d.objectStoreNames.contains(META)) {
           d.createObjectStore(META, { keyPath: 'clip' });
+        }
+        if (!d.objectStoreNames.contains(BLOBS)) {
+          d.createObjectStore(BLOBS, { keyPath: 'id' });
         }
       };
       req.onsuccess = function () { resolve(req.result); };
@@ -68,10 +80,30 @@
     return Promise.resolve(false);
   };
 
-  /* Park an already-assembled clip. Rejects loudly — the caller decides
-     whether a storage failure is worth losing the take over. */
+  function meta(rec) {
+    return { id: rec.id, type: rec.type, ext: rec.ext, at: rec.at,
+             size: rec.size, saved: !!rec.saved, name: Store.nameFor(rec) };
+  }
+
+  /* Park an already-assembled clip: video into BLOBS, description into CLIPS.
+     Rejects loudly — the caller decides whether a storage failure is worth
+     losing the take over. */
   Store.put = function (rec) {
-    return tx(CLIPS, 'readwrite', function (s) { s.put(rec); });
+    return tx(BLOBS, 'readwrite', function (s) {
+      s.put({ id: rec.id, blob: rec.blob });
+    }).then(function () {
+      return tx(CLIPS, 'readwrite', function (s) { s.put(meta(rec)); });
+    });
+  };
+
+  /* Description only — no video is read. */
+  Store.putMeta = function (rec) {
+    return tx(CLIPS, 'readwrite', function (s) { s.put(meta(rec)); });
+  };
+
+  Store.getBlob = function (id) {
+    return tx(BLOBS, 'readonly', function (s) { return s.get(id); })
+      .then(function (row) { return row ? row.blob : null; });
   };
 
   Store.putChunk = function (clip, seq, blob) {
@@ -114,7 +146,7 @@
       var rec = { id: clip, blob: blob, type: type, ext: ext, at: at,
                   size: blob.size, saved: false,
                   name: 'clip-' + Store.stamp(at) + '.' + ext };
-      return tx(CLIPS, 'readwrite', function (s) { s.put(rec); })
+      return Store.put(rec)
         .then(function () { return Store.dropChunks(clip); })
         .then(function () { return rec; });
     });
@@ -140,7 +172,30 @@
   };
 
   Store.remove = function (id) {
-    return tx(CLIPS, 'readwrite', function (s) { s.delete(id); });
+    return tx(BLOBS, 'readwrite', function (s) { s.delete(id); })
+      .catch(function () {})
+      .then(function () {
+        return tx(CLIPS, 'readwrite', function (s) { s.delete(id); });
+      });
+  };
+
+  /* Clips written before video and metadata were separated still carry their
+     blob inline, which is exactly what made listing expensive. Move them
+     across once, on launch. */
+  Store.migrate = function () {
+    return tx(CLIPS, 'readonly', function (s) { return s.getAllKeys(); })
+      .then(function (ids) {
+        return (ids || []).reduce(function (chain, id) {
+          return chain.then(function () {
+            return tx(CLIPS, 'readonly', function (s) { return s.get(id); })
+              .then(function (rec) {
+                if (!rec || !rec.blob) return null;
+                return Store.put(rec);   // splits it, then rewrites metadata
+              });
+          }).catch(function () {});
+        }, Promise.resolve());
+      })
+      .catch(function () {});
   };
 
   /* Every clip carries its own timestamped name. They used to all be
@@ -158,11 +213,19 @@
     return rec.name || ('clip-' + Store.stamp(rec.at) + '.' + (rec.ext || 'mp4'));
   };
 
-  Store.toFile = function (rec) {
-    return new File([rec.blob], Store.nameFor(rec), {
-      type: rec.type || 'video/mp4',
-      lastModified: rec.at
-    });
+  /* Build the File to hand to the share sheet. The video is fetched here and
+     nowhere else, so nothing that merely lists or counts clips ever touches
+     it. Resolves null if the video is missing. */
+  Store.fileFor = function (rec) {
+    var wrap = function (blob) {
+      if (!blob) return null;
+      return new File([blob], Store.nameFor(rec), {
+        type: rec.type || 'video/mp4',
+        lastModified: rec.at
+      });
+    };
+    if (rec.blob) return Promise.resolve(wrap(rec.blob));
+    return Store.getBlob(rec.id).then(wrap, function () { return null; });
   };
 
   /* Flag a clip as handed off. Deliberately not a delete — iOS reports a
