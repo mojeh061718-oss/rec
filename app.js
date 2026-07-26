@@ -6,7 +6,8 @@
  *   ac2          begin capture on the 1x main camera
  *   f1           begin capture on the front camera
  *   done         end capture, store the clip, and open the share sheet
- *   save         hand the oldest stored clip to the iOS share sheet
+ *   save         hand the oldest unsaved clip to the iOS share sheet
+ *   save all     put every unsaved clip into a single sheet
  *   clips        list stored clips, oldest first, ✓ = already handed off
  *   pending      list only the clips not yet handed off
  *   clear        wipe the screen and delete clips already handed off
@@ -189,16 +190,82 @@
     }, function () { mark(null); return 'kept'; });
   }
 
-  /* Oldest clip still waiting. Orphans finished but could not be stored and
-     only live for this session, so they go first. */
-  function handoff() {
-    var pick = Recorder.orphans.length
-      ? Promise.resolve(Recorder.orphans[0])
-      : Store.unsaved().then(function (rows) { return rows[0] || null; });
+  /* Everything still waiting, oldest first. Orphans finished but could not be
+     stored and only live for this session, so they go first. */
+  function unsavedAll() {
+    return Store.unsaved().then(function (rows) {
+      return Recorder.orphans.concat(rows);
+    }, function () { return Recorder.orphans.slice(); });
+  }
 
-    return pick.then(function (rec) {
-      return rec ? shareRecord(rec) : 'empty';
+  function handoff() {
+    return unsavedAll().then(function (rows) {
+      return rows.length ? shareRecord(rows[0]) : 'empty';
     }, function () { return 'empty'; });
+  }
+
+  /* One sheet, as many clips as will safely go in it.
+   *
+   * A share has to happen inside the activation the keypress granted, and
+   * that is spent by the first sheet — so a loop would fail on the second
+   * clip. Instead they go across together. The batch is capped because the
+   * files have to be materialised to hand over, and an unbounded set of 4K
+   * takes is exactly what used to bring the app down; whatever doesn't fit
+   * stays queued for the next `save all`. */
+  var BATCH_BYTES = 1024 * 1024 * 1024;   // ~1 GB per sheet
+  var BATCH_FILES = 12;
+
+  function markSavedAll(recs) {
+    return recs.reduce(function (chain, rec) {
+      return chain.then(function () {
+        var i = Recorder.orphans.indexOf(rec);
+        rec.saved = true;
+        if (i !== -1) {
+          Recorder.orphans.splice(i, 1);
+          return Store.put(rec).catch(function () {});
+        }
+        return Store.putMeta(rec).catch(function () {});
+      });
+    }, Promise.resolve());
+  }
+
+  function handoffAll() {
+    return unsavedAll().then(function (rows) {
+      if (!rows.length) return { result: 'empty' };
+
+      var batch = [], bytes = 0;
+      for (var i = 0; i < rows.length; i++) {
+        var size = rows[i].size || 0;
+        // Always take at least one, so a single oversized clip is still
+        // saveable rather than permanently stuck.
+        if (batch.length &&
+            (bytes + size > BATCH_BYTES || batch.length >= BATCH_FILES)) break;
+        batch.push(rows[i]);
+        bytes += size;
+      }
+
+      // Loaded one at a time — the point of this batch cap is not holding
+      // more video in memory than necessary.
+      var files = [], taken = [];
+      return batch.reduce(function (chain, rec) {
+        return chain.then(function () {
+          return Store.fileFor(rec).then(function (f) {
+            if (f) { files.push(f); taken.push(rec); }
+          }, function () {});
+        });
+      }, Promise.resolve()).then(function () {
+        if (!files.length) return { result: 'missing' };
+        mark('save all ' + files.length + ' / ' + Math.round(bytes / 1048576) + 'M');
+        return Recorder.save(files).then(function (r) {
+          mark(null);
+          if (r !== 'saved') return { result: 'kept' };
+          return markSavedAll(taken).then(function () {
+            return { result: 'saved', n: files.length,
+                     left: rows.length - taken.length };
+          });
+        }, function () { mark(null); return { result: 'kept' }; });
+      });
+    }, function () { return { result: 'empty' }; });
   }
 
   recorder.onAutoStop = function (rec, err) {
@@ -256,6 +323,20 @@
         0
       ]);
     });
+    return steps;
+  }
+
+  /* Reports how many went across, and how many are still queued. */
+  function pushedTurn(n, left) {
+    var steps = [
+      ['spin', 'Working', 800],
+      ['tool', '⏺ Bash(git push)', 1100],
+      ['result', '  ⎿  Enumerating objects: ' + n + ', done.', 0],
+      ['result', '     3af4052..c597f9a  main -> main', 0]
+    ];
+    if (left > 0) {
+      steps.push(['result', '     ' + left + ' behind — push again', 0]);
+    }
     return steps;
   }
 
@@ -380,13 +461,28 @@
       });
     }
 
+    if (cmd === 'saveall') {
+      if (recorder.recording) return playTurn(nextFiller());
+      return handoffAll().then(function (r) {
+        return refreshPending().then(function () {
+          if (r.result === 'empty') return playTurn(T.nothing);
+          if (r.result === 'missing') return playTurn(T.failed);
+          if (r.result !== 'saved') return playTurn(T.handoff);
+          return playTurn(pushedTurn(r.n, r.left));
+        });
+      });
+    }
+
     if (cmd === 'save') {
       if (recorder.recording) return playTurn(nextFiller());
       return handoff().then(function (result) {
-        return refreshPending().then(function () {
+        return refreshPending().then(function (rows) {
           if (result === 'empty') return playTurn(T.nothing);
           if (result === 'missing') return playTurn(T.failed);
-          return playTurn(result === 'saved' ? T.pushed : T.handoff);
+          if (result !== 'saved') return playTurn(T.handoff);
+          var left = rows.filter(function (r) { return !r.saved; }).length +
+                     Recorder.orphans.length;
+          return playTurn(pushedTurn(1, left));
         });
       });
     }

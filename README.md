@@ -15,6 +15,7 @@ the transcript gives no hint that any of them is different from the others.
 | `f1`        | starts capturing on the **front camera** |
 | `done`      | stops, stores the clip, and opens the share sheet |
 | `save`      | retries the sheet for the oldest unsaved clip |
+| `save all`  | puts every unsaved clip into one sheet |
 | `clips`     | lists stored clips, oldest first (`✓` = already handed off) |
 | `pending`   | lists only the clips **not** yet saved |
 | `clear`     | wipes the screen and deletes clips already handed off |
@@ -120,7 +121,34 @@ storage in the background rather than ahead of the sheet. Measured at about
 15 ms from keypress to sheet.
 
 If the sheet doesn't appear, or you dismiss it, the clip is kept and `save`
-tries again. The status line tells you when something is waiting:
+tries again.
+
+## Saving several at once
+
+**`save all`** puts every unsaved clip into a single share sheet. One tap on
+**Save N Videos** and they all go to the camera roll together.
+
+It fills each sheet up to about a gigabyte and stops there. Whatever doesn't
+fit stays queued and the reply tells you:
+
+```
+  ⎿  Enumerating objects: 2, done.
+     3af4052..c597f9a  main -> main
+     3 behind — push again
+```
+
+Type `save all` again for the next batch, and keep going until the `*` clears
+from the status line. Plain `save` also reports what's left now, so either way
+you can see when you're done.
+
+The reason it batches rather than sending everything: a share has to happen
+inside the moment of user activation your keypress granted, and the first sheet
+spends it — so looping wouldn't work for the second clip. The files also have
+to be materialised to hand over, and an unbounded pile of 4K takes is exactly
+what used to bring the app down. A single clip larger than the cap still goes
+on its own rather than getting stuck.
+
+The status line tells you when something is waiting:
 
 ```
 main* · 64% context left

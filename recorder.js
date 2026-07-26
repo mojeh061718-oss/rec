@@ -616,10 +616,14 @@
      Only 'saved' means the clip definitely reached Photos — everything else
      leaves it in storage. A download fallback in a standalone PWA often does
      nothing visible, so treating it as success would quietly bin the take. */
-  Recorder.save = function (file) {
+  Recorder.save = function (files) {
+    if (!files) return Promise.resolve('missing');
+    if (!(files instanceof Array)) files = [files];
+    if (!files.length) return Promise.resolve('missing');
+
     Recorder.lastSave = null;
-    if (navigator.canShare && navigator.canShare({ files: [file] }) && navigator.share) {
-      return navigator.share({ files: [file] }).then(function () {
+    if (navigator.canShare && navigator.canShare({ files: files }) && navigator.share) {
+      return navigator.share({ files: files }).then(function () {
         Recorder.lastSave = 'shared';
         return 'saved';
       }, function (err) {
@@ -627,12 +631,12 @@
         Recorder.lastSave = name;
         if (name === 'AbortError') return 'dismissed';
         if (name === 'NotAllowedError') return 'blocked';   // lost the gesture
-        Recorder._download(file);
+        files.forEach(Recorder._download);
         return 'downloaded';
       });
     }
     Recorder.lastSave = 'canShare=false';
-    Recorder._download(file);
+    files.forEach(Recorder._download);
     return Promise.resolve('downloaded');
   };
 
