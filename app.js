@@ -2,11 +2,12 @@
  * the status line honest for the operator without announcing anything.
  *
  * Control words (all of them produce ordinary-looking turns):
- *   agent-call1  begin capture on the 0.5x ultra wide
- *   agent-call2  begin capture on the 1x main camera
+ *   ac1          begin capture on the 0.5x ultra wide
+ *   ac2          begin capture on the 1x main camera
  *   done         end capture — stores the clip, shows nothing
  *   save         hand the oldest stored clip to the iOS share sheet
  *   clips        report how many clips are waiting
+ *   diag         real internals — the one output here that isn't theatre
  *   warm         take the camera without recording (clears the prompt)
  *   cool         release the camera entirely
  *   lens         report the live lens and its negotiated resolution
@@ -120,15 +121,24 @@
    */
 
   function handoff() {
-    return Store.oldest().then(function (rec) {
+    // Recorder.orphan is a clip that finished but could not be stored. It
+    // only lives for this session, so it goes first.
+    var pick = Recorder.orphan
+      ? Promise.resolve(Recorder.orphan)
+      : Store.oldest();
+
+    return pick.then(function (rec) {
       if (!rec) return 'empty';
       return Recorder.save(Store.toFile(rec)).then(function (result) {
-        if (result === 'saved' || result === 'downloaded') {
-          return Store.remove(rec.id).then(function () { return 'saved'; });
-        }
-        return 'kept';   // sheet dismissed — clip stays put
+        // Only a genuine share means it reached Photos. A download fallback
+        // in a standalone PWA frequently does nothing visible, so the clip
+        // stays put rather than being binned on an assumption.
+        if (result !== 'saved') return 'kept';
+        if (Recorder.orphan === rec) Recorder.orphan = null;
+        return Store.remove(rec.id).then(function () { return 'saved'; },
+                                         function () { return 'saved'; });
       }, function () { return 'kept'; });
-    });
+    }, function () { return 'empty'; });
   }
 
   recorder.onAutoStop = function (rec, err) {
@@ -180,6 +190,37 @@
     return steps;
   }
 
+  /* The only truthful output in the app. Everything else is canned; this
+     reports what actually happened, so a failure on the phone is legible
+     instead of hiding behind a plausible-looking build error. */
+  function diagTurn(r, rows) {
+    var stored = rows.reduce(function (n, x) { return n + x.size; }, 0);
+    var lines = [
+      'camera:  ' + r.camera + (r.recording ? ' · REC' : ''),
+      'codec:   ' + r.mime.replace('video/', '').slice(0, 30),
+      'opts:    ' + r.opts,
+      'take:    ' + r.chunks + ' chunks / ' + r.mb + ' MB / ' + r.held,
+      'stored:  ' + rows.length + ' clip(s) / ' +
+        Math.round(stored / 1048576) + ' MB',
+      'share:   ' + r.lastShare
+    ];
+    if (r.orphan) lines.push('orphan:  ' + r.orphan + ' MB unstored');
+    if (r.errors.length) {
+      r.errors.forEach(function (e) { lines.push('! ' + e.slice(0, 40)); });
+    } else {
+      lines.push('errors:  none');
+    }
+
+    var steps = [
+      ['spin', 'Working', 700],
+      ['tool', '⏺ Bash(tail -n 20 .claude/debug.log)', 800]
+    ];
+    lines.forEach(function (l, i) {
+      steps.push(['result', (i === 0 ? '  ⎿  ' : '     ') + l, 0]);
+    });
+    return steps;
+  }
+
   function beginOn(kind) {
     // Kick capture off inside the gesture, then let the turn play out
     // alongside it. The transcript never waits on the camera.
@@ -207,8 +248,14 @@
       return got.then(function (report) { return playTurn(lensTurn(report)); });
     }
 
-    if (cmd === 'agentcall1') return beginOn('ultrawide');
-    if (cmd === 'agentcall2') return beginOn('wide');
+    if (cmd === 'ac1' || cmd === 'agentcall1') return beginOn('ultrawide');
+    if (cmd === 'ac2' || cmd === 'agentcall2') return beginOn('wide');
+
+    if (cmd === 'diag') {
+      return Store.list().then(function (rows) {
+        return playTurn(diagTurn(recorder.report(), rows));
+      });
+    }
 
     if (cmd === 'done') {
       if (!recorder.recording) return playTurn(nextFiller());

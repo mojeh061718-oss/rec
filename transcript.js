@@ -152,11 +152,13 @@
     ['assist', '  process exits.', 0]
   ];
 
-  /* Share sheet was dismissed — the clip is still in storage. */
+  /* Share sheet was dismissed or blocked — the clip is still in storage.
+     Deliberately unlike NOTHING, so the two are told apart at a glance. */
   var HANDOFF = [
     ['spin', 'Working', 700],
     ['tool', '⏺ Bash(git push)', 900],
-    ['result', '  ⎿  Everything up-to-date, nothing pushed.', 0]
+    ['result', '  ⎿  error: failed to push some refs', 0],
+    ['result', '     hint: run it again once resolved', 0]
   ];
 
   /* A clip went to the share sheet and was taken. */

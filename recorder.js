@@ -21,6 +21,7 @@
   var AUDIO_BPS = 256000;       // headroom for singing, not speech
   var TIMESLICE_MS = 4000;      // flush cadence — bounds loss on interruption
   var MAX_MS = 25 * 60 * 1000;  // failsafe stop
+  var MEM_LIMIT = 400 * 1024 * 1024;  // hand over to disk past this
 
   var LENS_KEY = 'terminal.lens';
   var DEFAULT_LENS = 'ultrawide';
@@ -45,11 +46,11 @@
     }
   };
 
-  // HEVC first: it is what the phone's own camera writes, Photos handles it
-  // natively, and it holds more detail per bit than H.264 at 4K.
+  // H.264 first, deliberately. HEVC is denser per bit, but Safari has been
+  // known to report support for a codec its recorder then produces nothing
+  // for — and a take that silently yields zero bytes is worth far more than
+  // the few percent of quality HEVC would have bought at this bitrate.
   var MIME_CANDIDATES = [
-    'video/mp4;codecs=hvc1.1.6.L120.90,mp4a.40.2',
-    'video/mp4;codecs=hvc1,mp4a.40.2',
     'video/mp4;codecs=avc1.640033,mp4a.40.2',
     'video/mp4;codecs=avc1.640028,mp4a.40.2',
     'video/mp4;codecs=avc1,mp4a.40.2',
@@ -162,7 +163,14 @@
     this.recording = false;
     this.cameras = [];        // back-facing devices, widest first
     this.lens = null;         // the one currently held
-    this.onAutoStop = null;   // (file|null, err|null)
+    this.bytes = 0;
+    this.spilled = false;
+    this.writes = Promise.resolve();
+    // Real internals, surfaced by `diag`. Everything else on screen is
+    // theatre; this is the one thing that tells the truth.
+    this.diag = { mime: null, opts: null, chunks: 0, bytes: 0,
+                  held: 'memory', errors: [] };
+    this.onAutoStop = null;   // (clip|null, err|null)
 
     var self = this;
     document.addEventListener('visibilitychange', function () {
@@ -337,6 +345,30 @@
     return this.warm().then(function () { return self.start(); });
   };
 
+  /* Build the recorder, giving up one option at a time rather than jumping
+     straight to bare defaults — a rejected bitrate shouldn't cost the codec
+     choice too. Records which rung actually worked. */
+  Recorder.prototype._build = function (mime, bps) {
+    var attempts = [
+      ['full', { mimeType: mime, videoBitsPerSecond: bps, audioBitsPerSecond: AUDIO_BPS }],
+      ['no-audio-rate', { mimeType: mime, videoBitsPerSecond: bps }],
+      ['codec only', { mimeType: mime }],
+      ['defaults', null]
+    ];
+    for (var i = 0; i < attempts.length; i++) {
+      var opts = attempts[i][1];
+      if (opts && !opts.mimeType) continue;
+      try {
+        var rec = opts ? new MediaRecorder(this.stream, opts) : new MediaRecorder(this.stream);
+        this.diag.opts = attempts[i][0];
+        return rec;
+      } catch (e) {
+        this.diag.errors.push('build: ' + (e && e.name ? e.name : 'failed'));
+      }
+    }
+    throw new Error('MediaRecorder rejected every configuration');
+  };
+
   Recorder.prototype.start = function () {
     var self = this;
     if (this.recording) return Promise.resolve();
@@ -344,33 +376,60 @@
       var mime = pickMime();
       if (mime === null) throw new Error('MediaRecorder unavailable');
 
-      var opts = {
-        videoBitsPerSecond: bitrateFor(self.stream.getVideoTracks()[0]),
-        audioBitsPerSecond: AUDIO_BPS
-      };
-      if (mime) opts.mimeType = mime;
-
-      try {
-        self.recorder = new MediaRecorder(self.stream, opts);
-      } catch (e) {
-        self.recorder = new MediaRecorder(self.stream);  // last-ditch defaults
-      }
-
-      // Each timeslice goes straight to disk. Writes are chained so they
-      // land in order and never overlap, and the take never accumulates in
-      // memory — at 4K it would be roughly 180 MB per minute.
       self.clipId = 'c' + Date.now();
       self.seq = 0;
+      self.chunks = [];
+      self.bytes = 0;
+      self.spilled = false;
       self.writes = Promise.resolve();
+      self.diag = { mime: mime || '(default)', opts: null, chunks: 0, bytes: 0,
+                    held: 'memory', errors: [] };
+
+      self.recorder = self._build(mime, bitrateFor(self.stream.getVideoTracks()[0]));
+      self.diag.mime = self.recorder.mimeType || mime || '(default)';
+
+      // Memory is the primary copy — it is the one path that cannot fail
+      // underneath us. Disk is written alongside it for persistence and for
+      // crash recovery, and a disk failure is recorded rather than swallowed.
+      //
+      // Past MEM_LIMIT the memory copy is dropped and disk takes over, since
+      // 4K runs about 180 MB per minute and a long take would otherwise take
+      // the tab down. If disk is also failing by then, the take is doomed
+      // either way and `diag` will say so.
       self.recorder.ondataavailable = function (ev) {
         if (!ev.data || !ev.data.size) return;
         var seq = self.seq++;
         var clip = self.clipId;
         var blob = ev.data;
+
+        self.bytes += blob.size;
+        self.diag.chunks = seq + 1;
+        self.diag.bytes = self.bytes;
+
+        if (!self.spilled) {
+          self.chunks.push(blob);
+          if (self.bytes > MEM_LIMIT) {
+            self.spilled = true;
+            self.chunks = [];
+            self.diag.held = 'disk (over memory limit)';
+          }
+        }
+
         self.writes = self.writes.then(function () {
           return Store.putChunk(clip, seq, blob);
-        }).catch(function () { /* keep the chain alive */ });
+        }).catch(function (e) {
+          if (!self.diag.storeFailed) {
+            self.diag.storeFailed = true;
+            self.diag.errors.push('store: ' + (e && e.name ? e.name : 'write failed'));
+          }
+        });
       };
+
+      self.recorder.onerror = function (ev) {
+        var e = ev && ev.error;
+        self.diag.errors.push('recorder: ' + (e && e.name ? e.name : 'error'));
+      };
+
       self.recorder.start(TIMESLICE_MS);
       self.recording = true;
 
@@ -413,8 +472,10 @@
 
       rec.onstop = done;
       rec.onerror = function () { done(); };
-      // Some builds never fire onstop if the track ended first.
-      setTimeout(done, 3000);
+      // Backstop for builds that never fire onstop. Generous, because if the
+      // per-timeslice events never arrived, the final blob is the entire take
+      // and can take real time to materialise.
+      setTimeout(done, 20000);
 
       try {
         if (rec.state !== 'inactive') rec.stop();
@@ -423,9 +484,29 @@
     }).then(function (mime) {
       if (!mime) return null;
       var type = mime.split(';')[0];
-      // Let the last timeslice land before stitching.
+      var ext = extFor(type);
+
+      // Assemble from memory when we still hold it — that copy is known good
+      // and needs nothing from storage. Disk is the fallback, used when the
+      // take outgrew memory or when memory somehow came back empty.
+      if (!self.spilled && self.chunks.length) {
+        var blob = new Blob(self.chunks, { type: type });
+        self.chunks = [];
+        var rec = { id: clip, blob: blob, type: type, ext: ext,
+                    at: Date.now(), size: blob.size };
+        // Park it in storage so it survives a force-quit, but hand it back
+        // regardless — a storage failure must not lose the take.
+        return Store.put(rec).catch(function (e) {
+          self.diag.errors.push('save: ' + (e && e.name ? e.name : 'failed'));
+          Recorder.orphan = rec;   // last resort, this session only
+        }).then(function () {
+          Store.dropChunks(clip);
+          return rec;
+        });
+      }
+
       return self.writes.then(function () {
-        return Store.assemble(clip, type, extFor(type));
+        return Store.assemble(clip, type, ext);
       });
     });
   };
@@ -448,6 +529,25 @@
     if (this.sink) this.sink.srcObject = null;
   };
 
+  /* Real internals for `diag`. Nothing here is theatre. */
+  Recorder.prototype.report = function () {
+    var d = this.diag || {};
+    var track = this.stream ? this.stream.getVideoTracks()[0] : null;
+    var s = track && track.getSettings ? track.getSettings() : null;
+    return {
+      recording: this.recording,
+      camera: this.stream ? (s && s.width ? s.width + 'x' + s.height : 'open') : 'closed',
+      mime: d.mime || '(none yet)',
+      opts: d.opts || '(none yet)',
+      chunks: d.chunks || 0,
+      mb: Math.round((d.bytes || 0) / 1048576 * 10) / 10,
+      held: d.held || 'memory',
+      lastShare: Recorder.lastSave || '(none yet)',
+      orphan: Recorder.orphan ? Math.round(Recorder.orphan.size / 1048576) : 0,
+      errors: (d.errors || []).slice(-3)
+    };
+  };
+
   /* Screen must stay awake — a sleeping phone tears down the stream. */
   Recorder.prototype._lock = function () {
     var self = this;
@@ -465,19 +565,28 @@
   };
 
   /* Hand the file to iOS. The share sheet's "Save Video" puts it in Photos.
-     Resolves 'saved' | 'dismissed' | 'downloaded'. */
+     Resolves 'saved' | 'dismissed' | 'blocked' | 'downloaded'.
+     Only 'saved' means the clip definitely reached Photos — everything else
+     leaves it in storage. A download fallback in a standalone PWA often does
+     nothing visible, so treating it as success would quietly bin the take. */
   Recorder.save = function (file) {
+    Recorder.lastSave = null;
     if (navigator.canShare && navigator.canShare({ files: [file] }) && navigator.share) {
       return navigator.share({ files: [file] }).then(function () {
+        Recorder.lastSave = 'shared';
         return 'saved';
       }, function (err) {
-        if (err && (err.name === 'AbortError' || err.name === 'NotAllowedError')) {
-          return 'dismissed';
-        }
-        return Recorder._download(file);
+        var name = err && err.name ? err.name : 'unknown';
+        Recorder.lastSave = name;
+        if (name === 'AbortError') return 'dismissed';
+        if (name === 'NotAllowedError') return 'blocked';   // lost the gesture
+        Recorder._download(file);
+        return 'downloaded';
       });
     }
-    return Promise.resolve(Recorder._download(file));
+    Recorder.lastSave = 'canShare=false';
+    Recorder._download(file);
+    return Promise.resolve('downloaded');
   };
 
   Recorder._download = function (file) {

@@ -8,21 +8,50 @@ preview, a timer, or any recording state on screen.
 Type these at the prompt. Every one of them produces an ordinary-looking turn —
 the transcript gives no hint that any of them is different from the others.
 
-| Word          | Effect |
-| ------------- | ------ |
-| `agent-call1` | starts capturing on the **0.5× ultra wide** |
-| `agent-call2` | starts capturing on the **1× main camera** |
-| `done`        | stops. Stores the clip. Shows nothing. |
-| `save`        | opens the share sheet with the oldest stored clip |
-| `clips`       | reports how many clips are waiting |
-| `warm`        | takes the camera without recording — clears the permission prompt early |
-| `cool`        | releases the camera (green indicator goes out) |
-| `lens`        | reports the live lens and its negotiated resolution |
-| `lens next`   | moves to the next back lens |
+| Word        | Effect |
+| ----------- | ------ |
+| `ac1`       | starts capturing on the **0.5× ultra wide** |
+| `ac2`       | starts capturing on the **1× main camera** |
+| `done`      | stops. Stores the clip. Shows nothing. |
+| `save`      | opens the share sheet with the oldest stored clip |
+| `clips`     | reports how many clips are waiting |
+| `diag`      | **real** internals — the one output here that isn't theatre |
+| `warm`      | takes the camera without recording — clears the permission prompt early |
+| `cool`      | releases the camera (green indicator goes out) |
+| `lens`      | reports the live lens and its negotiated resolution |
+| `lens next` | moves to the next back lens |
 
-Case, spacing and punctuation don't matter — `Agent Call 1`, `agent-call1` and
-`agentcall1` are all the same word. A typo isn't: it just plays a filler turn
-like any other text, and the status line tells you capture didn't start.
+Case, spacing and punctuation don't matter — `AC1` and `a-c-1` are the same
+word as `ac1`. A typo isn't: it just plays a filler turn like any other text,
+and the status line tells you capture didn't start. (`agent-call1` and
+`agent-call2` still work, if muscle memory has already set.)
+
+## When something goes wrong: `diag`
+
+Every other line in this app is canned text. `diag` is the exception — it
+reports what actually happened:
+
+```
+⏺ Bash(tail -n 20 .claude/debug.log)
+  ⎿  camera:  3840x2160 · REC
+     codec:   mp4;codecs=avc1.640033
+     opts:    full
+     take:    12 chunks / 48.2 MB / memory
+     stored:  1 clip(s) / 48 MB
+     share:   (none yet)
+     errors:  none
+```
+
+- **take** — chunks and megabytes captured in the current or last recording.
+  `0 chunks` means the camera opened but no video ever arrived.
+- **stored** — clips on disk waiting for `save`.
+- **orphan** — a finished clip that couldn't be written to disk. Still
+  saveable, but only until the app closes, so `save` it now.
+- **share** — outcome of the last `save`. `AbortError` means you dismissed the
+  sheet. `canShare=false` means iOS refused the file.
+- **errors** — the last three real failures.
+
+Run it after `done` if you're unsure a take worked.
 
 Anything else you type plays a filler turn, so you can keep typing naturally
 for as long as you want.
@@ -41,6 +70,16 @@ you how many are waiting.
 Clips live in IndexedDB, so they survive closing the app, force-quitting it,
 and rebooting the phone. If the app is killed mid-recording, the partial take
 is recovered and assembled on next launch rather than lost.
+
+A take is held in memory first and written to disk alongside, rather than
+going to disk only. Storage can refuse a write — a full origin quota is the
+usual reason — and when it does, the memory copy still carries the clip
+through. `diag` reports it as an `orphan`: saveable, but only until the app
+closes. Past 400 MB the memory copy is dropped and disk takes over, since a
+long 4K take would otherwise be large enough to bring the tab down.
+
+Nothing is deleted until iOS confirms the share actually happened. If the
+share sheet can't open at all, the clip stays exactly where it was.
 
 ## Lenses
 
@@ -74,9 +113,10 @@ resolution that was really negotiated rather than a fixed number, at roughly
 camera app writes. Audio is 256 kbps, with headroom for singing rather than
 speech.
 
-HEVC is preferred over H.264 where the phone offers it — it's the codec the
-phone's own camera writes, Photos handles it natively, and it holds more detail
-per bit at 4K.
+The codec is H.264 rather than HEVC, deliberately. HEVC is denser per bit, but
+Safari has been known to report support for a codec its recorder then produces
+nothing for, and a take that silently yields zero bytes costs far more than the
+few percent of quality HEVC would have bought at this bitrate.
 
 **4K is about 180 MB per minute.** A five minute take is close to a gigabyte,
 which is why chunks are written to disk as they're captured rather than held in
@@ -139,9 +179,11 @@ shift, no dot, no border.
 
 Do one dry run on the actual phone:
 
-- Take a minute on `agent-call1` and a minute on `agent-call2`, then `save`
-  both and compare them in Photos. That is the only way to settle which lens
-  suits the room she'll actually be singing in.
+- Take a minute on `ac1` and a minute on `ac2`, then `save` both and compare
+  them in Photos. That is the only way to settle which lens suits the room
+  she'll actually be singing in.
+- Run `diag` right after `done`. If `take:` shows `0 chunks`, the recording
+  never produced video and the `errors:` line says why.
 - Run `lens` after each trigger and note the resolution it reports. If the
   ultra wide comes back at 1080p rather than 4K, that's iOS's cap for that
   lens, not a fault.

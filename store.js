@@ -62,6 +62,12 @@
     return Promise.resolve(false);
   };
 
+  /* Park an already-assembled clip. Rejects loudly — the caller decides
+     whether a storage failure is worth losing the take over. */
+  Store.put = function (rec) {
+    return tx(CLIPS, 'readwrite', function (s) { s.put(rec); });
+  };
+
   Store.putChunk = function (clip, seq, blob) {
     return tx(CHUNKS, 'readwrite', function (s) {
       s.put({ clip: clip, seq: seq, blob: blob });
