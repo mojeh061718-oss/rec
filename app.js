@@ -8,6 +8,7 @@
  *   save         hand the oldest stored clip to the iOS share sheet
  *   clips        report how many clips are waiting
  *   diag         real internals — the one output here that isn't theatre
+ *   update       drop the cached build and reload (clips are not touched)
  *   warm         take the camera without recording (clears the prompt)
  *   cool         release the camera entirely
  *   lens         report the live lens and its negotiated resolution
@@ -196,6 +197,7 @@
   function diagTurn(r, rows) {
     var stored = rows.reduce(function (n, x) { return n + x.size; }, 0);
     var lines = [
+      'build:   ' + T.build,
       'camera:  ' + r.camera + (r.recording ? ' · REC' : ''),
       'codec:   ' + r.mime.replace('video/', '').slice(0, 30),
       'opts:    ' + r.opts,
@@ -250,6 +252,23 @@
 
     if (cmd === 'ac1' || cmd === 'agentcall1') return beginOn('ultrawide');
     if (cmd === 'ac2' || cmd === 'agentcall2') return beginOn('wide');
+
+    // Drops the app-shell cache and the service worker, then reloads. Stored
+    // clips live in IndexedDB and are untouched.
+    if (cmd === 'update') {
+      return caches.keys().then(function (keys) {
+        return Promise.all(keys.map(function (k) { return caches.delete(k); }));
+      }).catch(function () {}).then(function () {
+        if (!navigator.serviceWorker) return [];
+        return navigator.serviceWorker.getRegistrations().catch(function () { return []; });
+      }).then(function (regs) {
+        return Promise.all((regs || []).map(function (r) {
+          return r.unregister().catch(function () {});
+        }));
+      }).then(function () {
+        location.reload();
+      });
+    }
 
     if (cmd === 'diag') {
       return Store.list().then(function (rows) {

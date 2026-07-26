@@ -17,12 +17,18 @@
 
   var CWD = '~/projects/relay';
 
+  /* Bump on every deploy. Shown at boot so the build running on the phone can
+     be identified without typing anything — a stale home-screen install is
+     otherwise indistinguishable from a broken one, since unknown words just
+     fall through to filler turns. */
+  var BUILD = 5;
+
   var BOOT = [
     ['banner', '✻ Welcome to Claude Code', 90],
     ['hint', '', 0],
     ['hint', '  /help for help, /status for your setup', 0],
     ['hint', '', 0],
-    ['hint', '  cwd: ' + CWD, 260],
+    ['hint', '  v0.4.' + BUILD + ' · cwd: ' + CWD, 260],
     ['hint', '', 0],
     ['result', '⏺ Resumed session — 14 messages restored', 0],
     ['hint', '', 0]
@@ -178,6 +184,7 @@
 
   global.Transcript = {
     cwd: CWD,
+    build: BUILD,
     boot: BOOT,
     filler: FILLER,
     start: START,

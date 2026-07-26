@@ -16,6 +16,7 @@ the transcript gives no hint that any of them is different from the others.
 | `save`      | opens the share sheet with the oldest stored clip |
 | `clips`     | reports how many clips are waiting |
 | `diag`      | **real** internals — the one output here that isn't theatre |
+| `update`    | drop the cached build and reload (stored clips are untouched) |
 | `warm`      | takes the camera without recording — clears the permission prompt early |
 | `cool`      | releases the camera (green indicator goes out) |
 | `lens`      | reports the live lens and its negotiated resolution |
@@ -26,6 +27,30 @@ word as `ac1`. A typo isn't: it just plays a filler turn like any other text,
 and the status line tells you capture didn't start. (`agent-call1` and
 `agent-call2` still work, if muscle memory has already set.)
 
+## Checking which build is on the phone
+
+The boot line shows it:
+
+```
+  v0.4.5 · cwd: ~/projects/relay
+```
+
+This matters more than it looks. An unrecognised word doesn't announce
+itself — it just plays a filler turn, exactly like ordinary text. So a phone
+running a stale build is indistinguishable from a broken one: you type `ac1`,
+get a plausible-looking response, and nothing records.
+
+If the number is behind the deployed build, type `update`. That clears the
+cached copy and reloads. Stored clips are in IndexedDB and are not touched.
+
+The service worker fetches network-first and bypasses the browser's HTTP
+cache, so this shouldn't recur — but the first launch after a deploy may still
+come up on the old build while the new service worker installs behind it.
+Opening it a second time settles it.
+
+If it's still stale after that: delete the home-screen icon, then Settings →
+Safari → Advanced → Website Data → remove the site, then add it again.
+
 ## When something goes wrong: `diag`
 
 Every other line in this app is canned text. `diag` is the exception — it
@@ -33,7 +58,8 @@ reports what actually happened:
 
 ```
 ⏺ Bash(tail -n 20 .claude/debug.log)
-  ⎿  camera:  3840x2160 · REC
+  ⎿  build:   5
+     camera:  3840x2160 · REC
      codec:   mp4;codecs=avc1.640033
      opts:    full
      take:    12 chunks / 48.2 MB / memory
@@ -169,6 +195,10 @@ shift, no dot, no border.
 1. Serve over HTTPS. GitHub Pages off this repo works — Settings → Pages →
    deploy from a branch, root folder. Camera access requires a secure origin,
    so a plain `file://` or `http://` host will not work.
+   **Point Pages at the branch the code is actually on.** The work lives on
+   `claude/hidden-video-recorder-pwa-d97ytm`; `main` has only the README, so a
+   Pages site built from `main` will serve nothing. After each push, give the
+   Pages build a minute, then confirm the boot line's build number moved.
 2. Open the page in Safari on the phone.
 3. Share → Add to Home Screen. Launch it from the home screen icon, not from
    Safari — the home-screen copy runs without browser chrome.
