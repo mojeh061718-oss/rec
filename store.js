@@ -263,16 +263,17 @@
     });
   };
 
-  /* Housekeeping at boot: clear clips that were handed off and are older than
-     maxAgeMs. Only ever touches clips already marked saved, so a recording
-     you haven't sent anywhere is never at risk from this. */
-  Store.prune = function (maxAgeMs) {
-    var cutoff = Date.now() - maxAgeMs;
+  /* Clear the handed-off marker on every clip, so they all queue up again.
+     For when a share reported success but the video never actually appeared
+     in Photos — the clip is still here, and this makes `save all` re-offer
+     it rather than skipping it as done. */
+  Store.unmarkAll = function () {
     return Store.list().then(function (rows) {
-      var stale = rows.filter(function (r) { return r.saved && r.at < cutoff; });
-      return stale.reduce(function (chain, r) {
-        return chain.then(function () { return Store.remove(r.id); });
-      }, Promise.resolve()).then(function () { return stale.length; });
+      var marked = rows.filter(function (r) { return r.saved; });
+      return marked.reduce(function (chain, r) {
+        r.saved = false;
+        return chain.then(function () { return Store.putMeta(r); });
+      }, Promise.resolve()).then(function () { return marked.length; });
     }).catch(function () { return 0; });
   };
 

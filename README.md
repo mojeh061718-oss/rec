@@ -18,6 +18,7 @@ the transcript gives no hint that any of them is different from the others.
 | `save all`  | puts every unsaved clip into one sheet |
 | `clips`     | lists stored clips, oldest first (`✓` = already handed off) |
 | `pending`   | lists only the clips **not** yet saved |
+| `resave`    | clears every `✓` so all clips queue up again |
 | `clear`     | wipes the screen and deletes clips already handed off |
 | `drop`      | deletes clips already handed off |
 | `drop all`  | deletes every stored clip, saved or not |
@@ -183,11 +184,19 @@ the question you actually have.
 the same time. It will not delete an unsaved clip — after `clear`, anything
 still showing under `pending` is still there.
 
-Clips marked `✓` are cleared automatically two days after they were saved, so
-storage doesn't need managing by hand. Unsaved clips are never pruned, at any
-age. To free space sooner, `drop` clears the `✓` ones immediately — it will not
-touch an unsaved clip. `drop all` takes everything and is the only command here
-that can destroy a recording you haven't saved.
+**Nothing is ever deleted automatically.** Storage is only freed by `clear`,
+`drop` or `drop all` — commands you type. `drop` and `clear` remove only the
+`✓` ones and will not touch an unsaved clip; `drop all` takes everything and is
+the only command here that can destroy a recording you haven't saved.
+
+There used to be a sweep that removed saved clips after two days. It measured
+age from when a clip was *recorded* rather than when it was saved, so saving a
+backlog of older takes would have marked them all and had the very next launch
+delete the lot — whether or not they ever reached Photos. It's gone.
+
+A `✓` means iOS accepted the share, not that you've seen the video. If a clip
+is marked but never actually turned up in Photos, `resave` clears every tick so
+`save all` offers them all again. It deletes nothing.
 
 ## Every clip has its own name
 
@@ -239,9 +248,8 @@ through. `diag` reports it as an `orphan`: saveable, but only until the app
 closes. Past 400 MB the memory copy is dropped and disk takes over, since a
 long 4K take would otherwise be large enough to bring the tab down.
 
-A clip is never deleted because a share reported success. The only automatic
-deletion is the two-day sweep of clips already handed off; everything else
-needs `drop`.
+A clip is never deleted because a share reported success, and never deleted on
+a timer. Removing anything takes `clear`, `drop` or `drop all`.
 
 ## Lenses
 

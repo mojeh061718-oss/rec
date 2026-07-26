@@ -10,6 +10,7 @@
  *   save all     put every unsaved clip into a single sheet
  *   clips        list stored clips, oldest first, ✓ = already handed off
  *   pending      list only the clips not yet handed off
+ *   resave       clear every handed-off tick so they all queue again
  *   clear        wipe the screen and delete clips already handed off
  *   drop         delete clips already handed off
  *   drop all     delete every stored clip, saved or not
@@ -502,6 +503,18 @@
       }, function () { out.textContent = ''; return playTurn(T.boot); });
     }
 
+    // Puts every clip back in the queue, including ones already marked as
+    // handed off. Nothing is deleted — this only clears the ticks, for when a
+    // share claimed success but Photos never actually got the video.
+    if (cmd === 'resave' || cmd === 'saveagain') {
+      if (recorder.recording) return playTurn(nextFiller());
+      return Store.unmarkAll().then(function (n) {
+        return refreshPending().then(function (rows) {
+          return playTurn(clipsTurn(rows));
+        });
+      }, function () { return playTurn(T.failed); });
+    }
+
     if (cmd === 'pending' || cmd === 'unsaved') {
       return refreshPending().then(function (rows) {
         return playTurn(clipsTurn(rows.filter(function (r) { return !r.saved; })));
@@ -596,9 +609,14 @@
   // Recover anything cut short by a kill, clear out clips that were saved
   // more than two days ago, then show the waiting count. A clip left over
   // from an earlier session shows its asterisk at boot.
+  // No automatic deletion of any kind. There used to be a sweep here that
+  // removed saved clips older than two days, but it measured age from when a
+  // clip was recorded rather than when it was saved — so saving a backlog of
+  // older takes would have marked them all and had the next launch delete the
+  // lot, whether or not they ever reached Photos. Storage is only ever freed
+  // by `clear`, `drop` or `drop all`, which are yours to type.
   Store.migrate()
     .then(function () { return Store.recover(); })
-    .then(function () { return Store.prune(48 * 60 * 60 * 1000); })
     .then(refreshPending, refreshPending);
 
   // Anything left here means the app died mid-operation last time.

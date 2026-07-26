@@ -21,7 +21,7 @@
      be identified without typing anything — a stale home-screen install is
      otherwise indistinguishable from a broken one, since unknown words just
      fall through to filler turns. */
-  var BUILD = 12;
+  var BUILD = 13;
 
   var BOOT = [
     ['banner', '✻ Welcome to Claude Code', 90],
