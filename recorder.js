@@ -640,6 +640,23 @@
     return Promise.resolve('downloaded');
   };
 
+  /* Save without going through the share sheet.
+   *
+   * An object URL is a reference to the data, not a copy of it, so the file is
+   * streamed out rather than materialised in memory the way handing it to the
+   * share sheet requires. For a large take this is the difference between
+   * saving and the app dying. It lands in Files rather than Photos. */
+  Recorder.stream = function (file) {
+    Recorder.lastSave = 'files';
+    try {
+      Recorder._download(file);
+      return Promise.resolve('downloaded');
+    } catch (e) {
+      Recorder.lastSave = (e && e.name) || 'download failed';
+      return Promise.resolve('kept');
+    }
+  };
+
   Recorder._download = function (file) {
     var url = URL.createObjectURL(file);
     var a = document.createElement('a');

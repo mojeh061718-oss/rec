@@ -16,6 +16,7 @@ the transcript gives no hint that any of them is different from the others.
 | `done`      | stops, stores the clip, and opens the share sheet |
 | `save`      | retries the sheet for the oldest unsaved clip |
 | `save all`  | puts every unsaved clip into one sheet |
+| `files`     | saves the oldest waiting clip to Files, bypassing the sheet |
 | `clips`     | lists stored clips, oldest first (`✓` = already handed off) |
 | `pending`   | lists only the clips **not** yet saved |
 | `resave`    | clears every `✓` so all clips queue up again |
@@ -144,10 +145,27 @@ you can see when you're done.
 
 The reason it batches rather than sending everything: a share has to happen
 inside the moment of user activation your keypress granted, and the first sheet
-spends it — so looping wouldn't work for the second clip. The files also have
-to be materialised to hand over, and an unbounded pile of 4K takes is exactly
-what used to bring the app down. A single clip larger than the cap still goes
-on its own rather than getting stuck.
+spends it — so looping wouldn't work for the second clip.
+
+## Large clips go to Files instead
+
+Handing a file to the share sheet makes iOS copy the whole thing into memory.
+Past a few hundred megabytes that kills the app outright — not an error that
+can be caught and reported, the process simply goes. At 4K, about two minutes
+of video is enough to reach that point.
+
+So any clip over **350 MB** skips the sheet and is written to **Files**
+instead, using a reference to the data rather than a copy. The reply says
+`wrote to dist/` when this happens. Such a clip always goes on its own; putting
+it in a batch would only guarantee the crash.
+
+To get one of those into Photos: open the **Files** app, find the clip in
+Downloads, then share it → **Save Video**. The Files app streams it properly,
+where a web page can't.
+
+`files` forces that route for the oldest waiting clip whatever its size — the
+escape hatch if the share sheet is killing the app at smaller sizes than
+expected.
 
 The status line tells you when something is waiting:
 

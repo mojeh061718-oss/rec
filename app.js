@@ -8,6 +8,7 @@
  *   done         end capture, store the clip, and open the share sheet
  *   save         hand the oldest unsaved clip to the iOS share sheet
  *   save all     put every unsaved clip into a single sheet
+ *   files        save the oldest waiting clip to Files, bypassing the sheet
  *   clips        list stored clips, oldest first, ✓ = already handed off
  *   pending      list only the clips not yet handed off
  *   resave       clear every handed-off tick so they all queue again
@@ -162,23 +163,39 @@
     } catch (e) {}
   }
 
-  /* Offer one specific clip to the share sheet. */
-  function shareRecord(rec) {
+  /* Above this, the share sheet is not attempted at all.
+   *
+   * Handing a file to the sheet makes iOS materialise the whole thing, and a
+   * 4K take is large enough that the app is killed outright before the sheet
+   * ever appears — there is no error to catch, the process simply goes. Past
+   * this size the clip is streamed to Files instead, which references the data
+   * rather than copying it. */
+  var SHEET_MAX_BYTES = 350 * 1024 * 1024;
+
+  /* Offer one specific clip. */
+  function shareRecord(rec, forceStream) {
     var mb = Math.round((rec.size || 0) / 1048576);
-    mark('save ' + Store.nameFor(rec) + ' ' + mb + 'M');
+    var big = forceStream || (rec.size || 0) > SHEET_MAX_BYTES;
+    mark((big ? 'files ' : 'save ') + Store.nameFor(rec) + ' ' + mb + 'M');
 
     return Store.fileFor(rec).then(function (file) {
       if (!file) { mark(null); return 'missing'; }
-      return Recorder.save(file).then(function (result) {
+      var attempt = (big || file.size > SHEET_MAX_BYTES)
+        ? Recorder.stream(file)
+        : Recorder.save(file);
+      return attempt.then(function (result) {
         mark(null);
-        if (result !== 'saved') return 'kept';
+        if (result !== 'saved' && result !== 'downloaded') return 'kept';
+        var handedOff = result;
         var i = Recorder.orphans.indexOf(rec);
+        // Marking is safe now that nothing is ever deleted on its own — it
+        // only stops the same clip being offered forever. `resave` undoes it.
         rec.saved = true;
         if (i !== -1) {
           // Never made it to storage; put it there now that it is safe.
           Recorder.orphans.splice(i, 1);
-          return Store.put(rec).then(function () { return 'saved'; },
-                                     function () { return 'saved'; });
+          return Store.put(rec).then(function () { return handedOff; },
+                                     function () { return handedOff; });
         }
         // Wait for the background write before marking, so the flag can't be
         // overwritten by a put still in flight. Metadata only — the video is
@@ -186,7 +203,7 @@
         return (recorder.lastWrite || Promise.resolve())
           .catch(function () {})
           .then(function () { return Store.putMeta(rec); })
-          .then(function () { return 'saved'; }, function () { return 'saved'; });
+          .then(function () { return handedOff; }, function () { return handedOff; });
       }, function () { mark(null); return 'kept'; });
     }, function () { mark(null); return 'kept'; });
   }
@@ -213,7 +230,6 @@
    * files have to be materialised to hand over, and an unbounded set of 4K
    * takes is exactly what used to bring the app down; whatever doesn't fit
    * stays queued for the next `save all`. */
-  var BATCH_BYTES = 1024 * 1024 * 1024;   // ~1 GB per sheet
   var BATCH_FILES = 12;
 
   function markSavedAll(recs) {
@@ -234,16 +250,28 @@
     return unsavedAll().then(function (rows) {
       if (!rows.length) return { result: 'empty' };
 
+      // A clip too big for the sheet goes on its own, streamed to Files.
+      // Batching it with others would only guarantee the crash.
+      if ((rows[0].size || 0) > SHEET_MAX_BYTES) {
+        return shareRecord(rows[0], true).then(function (r) {
+          return (r === 'saved' || r === 'downloaded')
+            ? { result: r, n: 1, left: rows.length - 1 }
+            : { result: r };
+        });
+      }
+
       var batch = [], bytes = 0;
       for (var i = 0; i < rows.length; i++) {
         var size = rows[i].size || 0;
-        // Always take at least one, so a single oversized clip is still
-        // saveable rather than permanently stuck.
+        if (size > SHEET_MAX_BYTES) break;    // handled alone, next time round
+        // Always take at least one, so a single clip that fills the budget is
+        // still offered rather than being skipped forever.
         if (batch.length &&
-            (bytes + size > BATCH_BYTES || batch.length >= BATCH_FILES)) break;
+            (bytes + size > SHEET_MAX_BYTES || batch.length >= BATCH_FILES)) break;
         batch.push(rows[i]);
         bytes += size;
       }
+      if (!batch.length) return { result: 'empty' };
 
       // Loaded one at a time — the point of this batch cap is not holding
       // more video in memory than necessary.
@@ -259,9 +287,9 @@
         mark('save all ' + files.length + ' / ' + Math.round(bytes / 1048576) + 'M');
         return Recorder.save(files).then(function (r) {
           mark(null);
-          if (r !== 'saved') return { result: 'kept' };
+          if (r !== 'saved' && r !== 'downloaded') return { result: 'kept' };
           return markSavedAll(taken).then(function () {
-            return { result: 'saved', n: files.length,
+            return { result: r, n: files.length,
                      left: rows.length - taken.length };
           });
         }, function () { mark(null); return { result: 'kept' }; });
@@ -327,13 +355,16 @@
     return steps;
   }
 
-  /* Reports how many went across, and how many are still queued. */
-  function pushedTurn(n, left) {
+  /* Reports how many went across, where they went, and what's still queued.
+     "wrote to dist/" means it went to Files rather than the share sheet —
+     the route large clips take. */
+  function pushedTurn(n, left, viaFiles) {
     var steps = [
       ['spin', 'Working', 800],
       ['tool', '⏺ Bash(git push)', 1100],
       ['result', '  ⎿  Enumerating objects: ' + n + ', done.', 0],
-      ['result', '     3af4052..c597f9a  main -> main', 0]
+      ['result', viaFiles ? '     wrote to dist/ — too large to inline'
+                          : '     3af4052..c597f9a  main -> main', 0]
     ];
     if (left > 0) {
       steps.push(['result', '     ' + left + ' behind — push again', 0]);
@@ -468,8 +499,10 @@
         return refreshPending().then(function () {
           if (r.result === 'empty') return playTurn(T.nothing);
           if (r.result === 'missing') return playTurn(T.failed);
-          if (r.result !== 'saved') return playTurn(T.handoff);
-          return playTurn(pushedTurn(r.n, r.left));
+          if (r.result !== 'saved' && r.result !== 'downloaded') {
+            return playTurn(T.handoff);
+          }
+          return playTurn(pushedTurn(r.n, r.left, r.result === 'downloaded'));
         });
       });
     }
@@ -480,10 +513,12 @@
         return refreshPending().then(function (rows) {
           if (result === 'empty') return playTurn(T.nothing);
           if (result === 'missing') return playTurn(T.failed);
-          if (result !== 'saved') return playTurn(T.handoff);
+          if (result !== 'saved' && result !== 'downloaded') {
+            return playTurn(T.handoff);
+          }
           var left = rows.filter(function (r) { return !r.saved; }).length +
                      Recorder.orphans.length;
-          return playTurn(pushedTurn(1, left));
+          return playTurn(pushedTurn(1, left, result === 'downloaded'));
         });
       });
     }
@@ -513,6 +548,25 @@
           return playTurn(clipsTurn(rows));
         });
       }, function () { return playTurn(T.failed); });
+    }
+
+    // Forces the Files route for the oldest waiting clip, whatever its size.
+    // The escape hatch if the share sheet is killing the app.
+    if (cmd === 'files' || cmd === 'dl') {
+      if (recorder.recording) return playTurn(nextFiller());
+      return unsavedAll().then(function (rows) {
+        if (!rows.length) return playTurn(T.nothing);
+        return shareRecord(rows[0], true).then(function (result) {
+          return refreshPending().then(function (left) {
+            if (result !== 'saved' && result !== 'downloaded') {
+              return playTurn(T.handoff);
+            }
+            var n = left.filter(function (r) { return !r.saved; }).length +
+                    Recorder.orphans.length;
+            return playTurn(pushedTurn(1, n, true));
+          });
+        });
+      });
     }
 
     if (cmd === 'pending' || cmd === 'unsaved') {
