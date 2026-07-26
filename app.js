@@ -4,6 +4,7 @@
  * Control words (all of them produce ordinary-looking turns):
  *   ac1          begin capture on the 0.5x ultra wide
  *   ac2          begin capture on the 1x main camera
+ *   f1           begin capture on the front camera
  *   done         end capture, store the clip, and open the share sheet
  *   save         hand the oldest stored clip to the iOS share sheet
  *   clips        list stored clips, newest last, ✓ = already handed off
@@ -305,6 +306,7 @@
 
     if (cmd === 'ac1' || cmd === 'agentcall1') return beginOn('ultrawide');
     if (cmd === 'ac2' || cmd === 'agentcall2') return beginOn('wide');
+    if (cmd === 'f1') return beginOn('front');
 
     // Drops the app-shell cache and the service worker, then reloads. Stored
     // clips live in IndexedDB and are untouched.

@@ -113,22 +113,23 @@
     virtual: '0.5x-3x auto',
     wide: '1x wide',
     telephoto: 'telephoto',
+    front: 'front camera',
     other: 'camera'
   };
 
-  /* Back-facing devices only, best-for-coverage first. */
-  function backCameras() {
+  /* Every camera, widest-covering rear lens first and the front one last, so
+     that anything falling back to cams[0] still lands on a rear lens. */
+  function allCameras() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
       return Promise.resolve([]);
     }
-    var order = { ultrawide: 0, virtual: 1, wide: 2, telephoto: 3, other: 4 };
+    var order = { ultrawide: 0, virtual: 1, wide: 2, telephoto: 3, other: 4, front: 5 };
     return navigator.mediaDevices.enumerateDevices().then(function (devices) {
       return devices
         .filter(function (d) { return d.kind === 'videoinput'; })
         .map(function (d) {
           return { id: d.deviceId, label: d.label, kind: classify(d.label) };
         })
-        .filter(function (d) { return d.kind !== 'front'; })
         .sort(function (a, b) { return order[a.kind] - order[b.kind]; });
     }).catch(function () { return []; });
   }
@@ -201,8 +202,11 @@
     // very first warm has to open blind and then correct itself, and that one
     // happens long before a trigger word does.
     var known = this.cameras && this.cameras.length ? this._pick(this.cameras) : null;
-    return this._open(known ? known.id : null)
-      .catch(function () { return self._open(null); })   // stale device id
+    // With no device list yet, a front request still opens facing the right
+    // way rather than grabbing a rear lens and correcting afterwards.
+    var facing = storedLens() === 'front' ? 'user' : 'environment';
+    return this._open(known ? known.id : null, facing)
+      .catch(function () { return self._open(null, facing); })   // stale id
       .then(function (stream) { return self._selectLens(stream); })
       .then(function (stream) { self._attach(stream); });
   };
@@ -220,16 +224,21 @@
         if (cams[j].kind === 'virtual') return cams[j];
       }
     }
+    // No front device exposed — facingMode handles it instead of silently
+    // handing back a rear lens.
+    if (want === 'front') return null;
     return cams[0];
   };
 
-  /* One getUserMedia call, optionally pinned to a device. */
-  Recorder.prototype._open = function (deviceId) {
+  /* One getUserMedia call, optionally pinned to a device or a facing. */
+  Recorder.prototype._open = function (deviceId, facing) {
     var video = {};
     for (var k in CONSTRAINTS.video) video[k] = CONSTRAINTS.video[k];
     if (deviceId) {
       delete video.facingMode;
       video.deviceId = { exact: deviceId };
+    } else if (facing) {
+      video.facingMode = { ideal: facing };
     }
     return navigator.mediaDevices.getUserMedia({
       video: video,
@@ -243,13 +252,20 @@
     var self = this;
     var want = storedLens();
 
-    return backCameras().then(function (cams) {
+    return allCameras().then(function (cams) {
       self.cameras = cams;
       if (!cams.length) return stream;
 
       var target = self._pick(cams);
       var track = stream.getVideoTracks()[0];
       var current = track && track.getSettings ? track.getSettings().deviceId : null;
+
+      // Front requested but no front device listed: facingMode already
+      // opened the right camera, so leave the stream be.
+      if (!target) {
+        self.lens = { kind: 'front', id: null, label: 'front' };
+        return stream;
+      }
 
       if (current && target.id && current === target.id) {
         self.lens = target;

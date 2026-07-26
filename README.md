@@ -12,6 +12,7 @@ the transcript gives no hint that any of them is different from the others.
 | ----------- | ------ |
 | `ac1`       | starts capturing on the **0.5× ultra wide** |
 | `ac2`       | starts capturing on the **1× main camera** |
+| `f1`        | starts capturing on the **front camera** |
 | `done`      | stops, stores the clip, and opens the share sheet |
 | `save`      | retries the sheet for the oldest unsaved clip |
 | `clips`     | lists stored clips, oldest first (`✓` = already handed off) |
@@ -174,11 +175,17 @@ needs `drop`.
 
 ## Lenses
 
-`agent-call1` is the **0.5× ultra wide** — the widest field of view, and the
-safer default when you can't watch a preview to check framing.
+`ac1` is the **0.5× ultra wide** — the widest field of view, and the safer
+default when you can't watch a preview to check framing.
 
-`agent-call2` is the **1× main camera** — sharper, much better in low light,
-and on an iPhone 16 Pro it's the lens that actually reaches 4K.
+`ac2` is the **1× main camera** — sharper, much better in low light, and on an
+iPhone 16 Pro it's the lens that actually reaches 4K.
+
+`f1` is the **front camera**. Worth knowing what it changes: the screen and the
+lens now point the same way, so whoever you're filming is looking straight at
+the console. It still reads as a coding session, but it is no longer out of
+view, and you can't watch the screen while it films. The front camera is also
+a smaller sensor than the 1× rear.
 
 iOS only reveals its individual lenses after camera permission is granted, and
 only by name, so the first warm takes the camera, reads what's there, and
@@ -192,8 +199,8 @@ negotiated. Worth doing once for each trigger on the real phone.
 **Which to use:** the ultra wide has a smaller sensor and a slower aperture, so
 indoors in anything less than good light it will be visibly grainier, and faces
 near the frame edges get stretched by the wide geometry. If she's centred and
-the room is lit, `agent-call2` will look considerably better. Use `agent-call1`
-when you're unsure she'll stay in frame.
+the room is lit, `ac2` will look considerably better. Use `ac1` when you're
+unsure she'll stay in frame.
 
 ## Quality
 
